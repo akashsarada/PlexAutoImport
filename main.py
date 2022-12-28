@@ -1,10 +1,10 @@
 import datetime
 import os
 import shutil
+import sys
 
 
 def move_file(src, dest):
-    """Move file from src to dest."""
     if os.path.exists(src):
         if os.path.exists(dest):
             print("Destination file already exists. Please choose another destination.")
@@ -16,14 +16,14 @@ def move_file(src, dest):
 
 
 if __name__ == '__main__':
-    src = input("Enter source folder: ")
+    src = sys.argv[1].removeprefix("[").removesuffix("]")
     if not os.path.exists(src):
         print("Source folder does not exist. Please choose another source.")
         exit(1)
 
-    dest = input("Enter destination folder: ")
+    dest = sys.argv[2].removeprefix("[").removesuffix("]")
     if not os.path.exists(dest):
-        os.mkdir(dest)
+        os.makedirs(dest)
 
     for file in os.listdir(src):
         filePath = os.path.join(src, file)
