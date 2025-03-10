@@ -4,7 +4,6 @@ import shutil
 import sys
 import time
 
-
 def move_file(src, dest):
     if os.path.exists(src):
         if os.path.exists(dest):
