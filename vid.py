@@ -28,10 +28,10 @@ if __name__ == '__main__':
     for file in os.listdir(src):
         filePath = os.path.join(src, file)
 
-        if filePath.endswith(".jpg") or filePath.endswith(".png") or filePath.endswith(".jpeg") or filePath.endswith(".gif") or filePath.endswith(".mp4") or filePath.endswith(".heic") or filePath.endswith(".dng"):
+        if filePath.endswith(".mov") or filePath.endswith(".mp4"):
             creation_year = datetime.datetime.fromtimestamp(os.path.getmtime(filePath)).year
 
-            folder = "Photos from " + str(creation_year)
+            folder = "Videos from " + str(creation_year)
             if os.path.exists(os.path.join(dest, folder)):
                 move_file(os.path.join(src, file), os.path.join(dest, folder, file))
             else:
