@@ -5,6 +5,7 @@ import torchvision
 from torchvision import transforms
 import os
 import json
+import datetime
 import numpy as np
 from preprocess_videos import preprocess_labeled_folder
 
@@ -14,7 +15,7 @@ if device.type == 'cuda':
     print(f"  GPU: {torch.cuda.get_device_name(0)}")
 
 # Image size (128x128 keeps compute load low on NAS)
-IMG_SIZE = 128
+IMG_SIZE = 160
 
 # Classes to EXCLUDE from training
 EXCLUDED_CLASSES = {'Misc', 'Unsortable'}
@@ -29,13 +30,13 @@ transform_val = transforms.Compose([
 
 # Training transform: data augmentation to combat overfitting on small dataset
 transform_train = transforms.Compose([
-    transforms.Resize(IMG_SIZE),
-    transforms.RandomCrop(IMG_SIZE, padding=8, padding_mode='reflect'),
+    transforms.RandomResizedCrop(IMG_SIZE, scale=(0.7, 1.0), ratio=(0.75, 1.33)),
     transforms.RandomHorizontalFlip(),
     transforms.RandomVerticalFlip(p=0.1),
     transforms.RandomRotation(20),
     transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
     transforms.RandomPerspective(distortion_scale=0.2, p=0.3),
+    transforms.RandomGrayscale(p=0.05),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
@@ -258,21 +259,21 @@ if __name__ == '__main__':
     print(f"\nModel parameters: {total_params:,} (~{total_params * 4 / 1024:.1f} KB)")
 
     # ── Step 7: Training setup ────────────────────────────────────────────────
-    loss_fn  = torch.nn.CrossEntropyLoss(weight=class_weights)
+    loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5
+        optimizer, mode='min', factor=0.5, patience=6
     )
     scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
 
     train_losses, val_losses = [], []
     best_val_loss    = float('inf')
-    patience         = 15
+    patience         = 25
     epochs_no_improve = 0
     best_model_state  = None
 
     # ── Step 8: Training loop ─────────────────────────────────────────────────
-    for epoch in range(250):
+    for epoch in range(350):
         # --- Training ---
         net.train()
         epoch_train_loss = 0.0
@@ -318,8 +319,8 @@ if __name__ == '__main__':
 
         current_val_loss = val_losses[-1]
         lr_now = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch+1:3d}/250 | Train Loss: {train_losses[-1]:.4f} | "
-              f"Val Loss: {current_val_loss:.4f} | LR: {lr_now:.2e}")
+        print(f"Epoch {epoch+1:3d}/350 | Train Loss: {train_losses[-1]:.4f} | "
+               f"Val Loss: {current_val_loss:.4f} | LR: {lr_now:.2e}")
 
         scheduler.step(current_val_loss)
 
@@ -379,15 +380,20 @@ if __name__ == '__main__':
         'classes':           full_train_dataset.classes,
         'model_parameters':  total_params,
     }
-    with open('sorter_mini_history.json', 'w') as f:
+    dt_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    score_rounded = round(test_accuracy)
+    score_rounded = round(test_accuracy)
+    history_filename = f"{score_rounded}_{dt_str}_sorter_mini_history.json"
+    with open(history_filename, 'w') as f:
         json.dump(history_log, f, indent=4)
     print('Training history saved to sorter_mini_history.json')
 
+    model_filename = f"{score_rounded}_{dt_str}_sorter_mini_model.pth"
     torch.save({
         'model_state_dict': net.state_dict(),
         'classes':          full_train_dataset.classes,
         'img_size':         IMG_SIZE,
-    }, 'sorter_mini_model.pth')
+    }, model_filename)
     print('Model saved to sorter_mini_model.pth')
 
     # ── Step 11: Plot ─────────────────────────────────────────────────────────
