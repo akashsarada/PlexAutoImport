@@ -1,10 +1,14 @@
-
-AkashImporter.bat
-.idea/*
+#.files
+.idea
 __pycache__
+.zip
+.antigravitycli
+
+# custom importers
+AkashImporter.bat
+
+# training data
 test
 dataset
 labeled
-*.zip
-.antigravitycli
-
+results

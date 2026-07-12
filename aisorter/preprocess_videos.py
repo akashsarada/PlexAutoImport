@@ -25,7 +25,7 @@ def extract_frames_from_video(video_path, output_dir, base_name):
     duration_seconds = total_frames / fps
     frame_indices = []
 
-    if duration_seconds < 60.0:
+    if duration_seconds < 30.0:
         # For videos less than a minute, get frames at 30%, 60%, and 90%
         percentages = [0.30, 0.60, 0.90]
         for p in percentages:
@@ -35,7 +35,7 @@ def extract_frames_from_video(video_path, output_dir, base_name):
             frame_indices.append(idx)
     else:
         # For videos >= 60 seconds, extract a frame every 30 seconds
-        step_frames = int(30 * fps)
+        step_frames = int(10 * fps)
         current_frame = step_frames
         while current_frame < total_frames:
             frame_indices.append(current_frame)
