@@ -3,6 +3,7 @@
 __pycache__
 .zip
 .antigravitycli
+.agents
 
 # custom importers
 AkashImporter.bat

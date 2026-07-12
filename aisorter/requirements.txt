@@ -1,0 +1,23 @@
+# Photo AI Sorter — Python dependencies
+#
+# Inference-only (required at runtime on the NAS):
+#   onnxruntime, opencv-python-headless, piexif, numpy, Pillow, requests, tqdm
+#
+# Train-only (needed only when retraining models on a dev machine):
+#   torch, torchvision
+#
+# Target hardware: legacy x86 (1st-gen i7, no AVX/AVX2).
+# onnxruntime 1.19.2 is the last release with SSE4-only CPU builds.
+
+# --- Inference dependencies ---
+onnxruntime==1.19.2
+opencv-python-headless==4.10.0.84
+piexif==1.1.3
+numpy==1.26.4
+Pillow==10.4.0
+requests==2.32.3
+tqdm==4.66.4
+
+# --- Train-only dependencies (not required on the NAS) ---
+torch==2.3.1
+torchvision==0.18.1
