@@ -3,3 +3,4 @@ torchvision
 matplotlib
 opencv-python
 pillow-heif
+tqdm

@@ -27,7 +27,8 @@ def parse_args() -> argparse.Namespace:
         default=os.path.join(os.path.dirname(__file__), "..", "results", f"run_{timestamp}"),
     )
     parser.add_argument("--val-split", type=float, default=0.15)
-    parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--in-memory", action="store_true", help="Load and resize all images to RAM at startup")
     return parser.parse_args()
 
 
@@ -87,15 +88,32 @@ def save_checkpoint(model: nn.Module, path: str, class_names: list[str]) -> None
     )
 
 
+class _TransformSubset(torch.utils.data.Dataset):
+    def __init__(self, subset, transform):
+        self._subset = subset
+        self._transform = transform
+
+    def __len__(self) -> int:
+        return len(self._subset)
+
+    def __getitem__(self, idx):
+        image, label = self._subset[idx]
+        if self._transform is not None:
+            image = self._transform(image)
+        return image, label
+
+
 def main() -> None:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
 
     train_transforms = build_transforms(train=True)
     val_transforms = build_transforms(train=False)
-    full_dataset = MultiLabelPhotoDataset(args.data, transform=None)
+    full_dataset = MultiLabelPhotoDataset(args.data, transform=None, in_memory=args.in_memory)
 
     num_classes = full_dataset.num_classes
     class_names = full_dataset.class_names
@@ -106,20 +124,6 @@ def main() -> None:
     train_subset, val_subset = random_split(
         full_dataset, [train_size, val_size], generator=generator
     )
-
-    class _TransformSubset(torch.utils.data.Dataset):
-        def __init__(self, subset, transform):
-            self._subset = subset
-            self._transform = transform
-
-        def __len__(self) -> int:
-            return len(self._subset)
-
-        def __getitem__(self, idx):
-            image, label = self._subset[idx]
-            if self._transform is not None:
-                image = self._transform(image)
-            return image, label
 
     train_dataset = _TransformSubset(train_subset, train_transforms)
     val_dataset = _TransformSubset(val_subset, val_transforms)
@@ -141,11 +145,33 @@ def main() -> None:
     )
 
     model = CategorySorter(num_classes=full_dataset.num_classes).to(device)
+
+    # Startup message
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    device_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
+    print("\n" + "=" * 50)
+    print("      PHOTO AI SORTER: TRAINING STARTUP")
+    print("=" * 50)
+    print(f"Model Architecture: {model.__class__.__name__}")
+    print(f"Total Parameters:    {total_params:,}")
+    print(f"Trainable Params:    {trainable_params:,}")
+    print(f"Dataset Directory:   {args.data}")
+    print(f"Training Samples:    {len(train_dataset)}")
+    print(f"Validation Samples:  {len(val_dataset)}")
+    print(f"Number of Classes:   {num_classes} ({', '.join(class_names)})")
+    print(f"Batch Size:          {args.batch_size}")
+    print(f"Initial LR:          {args.lr}")
+    print(f"Target Device:       {device} ({device_name})")
+    print("=" * 50 + "\n")
+
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     best_val_loss = float("inf")
+    best_val_acc = [0.0] * num_classes
+    best_val_epoch = 0
     best_checkpoint_path = os.path.join(args.output_dir, "best_model.pth")
     history: dict = {"train_loss": [], "val_loss": [], "val_accuracy_per_class": []}
 
@@ -166,6 +192,9 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _save_and_exit)
 
     for epoch in range(1, args.epochs + 1):
+        if (epoch - best_val_epoch) >= 50:
+            print(f"\nEarly stopping triggered: No validation improvement for 20 epochs.")
+            break
         train_loss = run_epoch(model, train_loader, criterion, optimizer, device, train=True)
         val_loss = run_epoch(model, val_loader, criterion, optimizer, device, train=False)
         val_acc = compute_val_accuracy(model, val_loader, device, num_classes)
@@ -184,11 +213,28 @@ def main() -> None:
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_val_acc = val_acc
+            best_val_epoch = epoch
             save_checkpoint(model, best_checkpoint_path, class_names)
 
     _flush_history()
+
+    # Rename output directory to append the best val accuracy
+    best_score_pct = round(sum(best_val_acc) / len(best_val_acc) * 100)
+    final_output_dir = f"{args.output_dir}_{best_score_pct}"
+    try:
+        if os.path.exists(args.output_dir):
+            os.rename(args.output_dir, final_output_dir)
+            best_checkpoint_path = os.path.join(final_output_dir, "best_model.pth")
+            history_json_path = os.path.join(final_output_dir, "history.json")
+        else:
+            history_json_path = os.path.join(args.output_dir, "history.json")
+    except Exception as e:
+        print(f"Warning: Could not rename directory to include score: {e}")
+        history_json_path = os.path.join(args.output_dir, "history.json")
+
     print(f"\nBest model  → {best_checkpoint_path}")
-    print(f"History     → {os.path.join(args.output_dir, 'history.json')}")
+    print(f"History     → {history_json_path}")
 
 
 if __name__ == "__main__":
