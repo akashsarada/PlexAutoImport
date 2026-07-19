@@ -2,7 +2,7 @@ import datetime
 import os
 import shutil
 import sys
-
+import time
 
 def move_file(src, dest):
     if os.path.exists(src):
@@ -10,10 +10,24 @@ def move_file(src, dest):
             print("Destination file already exists. Please choose another destination.")
         else:
             print("Moving file " + str(src) + " to " + str(dest))
-            shutil.move(src, dest)
+            robust_move(src, dest)
     else:
         print("Source file does not exist. Please choose another source.")
 
+def robust_move(src, dst):  
+    # 1. Copy the file first
+    shutil.copy2(src, dst)
+    
+    # 2. Brief pause to let Windows breathe
+    time.sleep(0.1) 
+    
+    # 3. Delete the source
+    try:
+        os.remove(src)
+    except PermissionError:
+        # If it fails, wait a second and try one last time
+        time.sleep(1)
+        os.remove(src)
 
 if __name__ == '__main__':
     src = sys.argv[1].removeprefix("[").removesuffix("]")
@@ -25,10 +39,12 @@ if __name__ == '__main__':
     if not os.path.exists(dest):
         os.makedirs(dest)
 
-    for file in os.listdir(src):
+    files = list(os.listdir(src))
+    for file in files:
         filePath = os.path.join(src, file)
 
-        if filePath.endswith(".jpg") or filePath.endswith(".png") or filePath.endswith(".jpeg") or filePath.endswith(".gif") or filePath.endswith(".mp4"):
+        extensions = ["jpg", ".png", ".jpeg", ".gif", "mp4", ".heic", ".dng"]
+        if os.path.splitext(filePath) in extensions:
             creation_year = datetime.datetime.fromtimestamp(os.path.getmtime(filePath)).year
 
             folder = "Photos from " + str(creation_year)
@@ -38,4 +54,3 @@ if __name__ == '__main__':
                 os.makedirs(os.path.join(dest, folder))
                 print("Created Folder " + os.path.join(dest, folder))
                 move_file(os.path.join(src, file), os.path.join(dest, folder, file))
-    exit(0)
