@@ -43,7 +43,8 @@ if __name__ == '__main__':
     for file in files:
         filePath = os.path.join(src, file)
 
-        if filePath.endswith(".jpg") or filePath.endswith(".png") or filePath.endswith(".jpeg") or filePath.endswith(".gif") or filePath.endswith(".mp4") or filePath.endswith(".heic") or filePath.endswith(".dng"):
+        extensions = ["jpg", ".png", ".jpeg", ".gif", "mp4", ".heic", ".dng"]
+        if os.path.splitext(filePath) in extensions:
             creation_year = datetime.datetime.fromtimestamp(os.path.getmtime(filePath)).year
 
             folder = "Photos from " + str(creation_year)
@@ -53,4 +54,3 @@ if __name__ == '__main__':
                 os.makedirs(os.path.join(dest, folder))
                 print("Created Folder " + os.path.join(dest, folder))
                 move_file(os.path.join(src, file), os.path.join(dest, folder, file))
-    exit(0)
