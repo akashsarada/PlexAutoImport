@@ -6,9 +6,13 @@ import sys
 
 import numpy as np
 import torch
+import onnxruntime as ort
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "models"))
-from category_sorter import CategorySorter
+from models.DSC import CategorySorter
+from models.MobileNetV3_Mini import MobileNetV3Mini
+from models.MobileNetV3_Small import MobileNetV3Small
+from models.small_CNN import CustomCNN
 
 
 def _resolve_output_path(model_path: str, output_arg: str | None) -> str:
@@ -26,8 +30,19 @@ def export(model_path: str, output_path: str, opset: int) -> str:
     checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
     class_names = checkpoint.get("class_names", ["cars", "people", "scenery"])
     num_classes = len(class_names)
+    model_type = checkpoint.get("model_type", "category_sorter")
 
-    model = CategorySorter(num_classes=num_classes)
+    if model_type == "category_sorter":
+        model = CategorySorter(num_classes=num_classes)
+    elif model_type == "sorter_mini":
+        model = MobileNetV3Mini(num_classes=num_classes)
+    elif model_type == "sorter_mobilenet":
+        model = MobileNetV3Small(num_classes=num_classes, pretrained=False)
+    elif model_type == "sorter":
+        model = CustomCNN(num_classes=num_classes)
+    else:
+        raise ValueError(f"Unknown model_type in checkpoint: {model_type}")
+
     model.load_state_dict(checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
     model.eval()
 
@@ -47,7 +62,6 @@ def export(model_path: str, output_path: str, opset: int) -> str:
         },
     )
 
-    import onnxruntime as ort
 
     session = ort.InferenceSession(output_path, providers=["CPUExecutionProvider"])
     result = session.run(None, {"input": np.zeros((1, 3, img_size, img_size), dtype=np.float32)})

@@ -11,7 +11,10 @@ from torch.utils.data import DataLoader, random_split
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from category_sorter import CategorySorter
+from DSC import CategorySorter
+from MobileNetV3_Mini import MobileNetV3Mini
+from MobileNetV3_Small import MobileNetV3Small
+from small_CNN import CustomCNN
 from dataset import MultiLabelPhotoDataset, build_transforms
 
 
@@ -29,6 +32,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-split", type=float, default=0.15)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--in-memory", action="store_true", help="Load and resize all images to RAM at startup")
+    parser.add_argument(
+        "--early-stopping-tolerance",
+        type=int,
+        default=50,
+        help="Number of epochs without validation improvement before stopping (default: 50)",
+    )
+    parser.add_argument(
+        "--model-type",
+        choices=["category_sorter", "sorter_mini", "sorter_mobilenet", "sorter"],
+        default="category_sorter",
+        help="Model architecture: category_sorter | MobileNetV3_Mini | MobileNetV3_Small | CustomCNN",
+    )
     return parser.parse_args()
 
 
@@ -76,13 +91,14 @@ def run_epoch(
     return total_loss / max(len(loader.dataset), 1)
 
 
-def save_checkpoint(model: nn.Module, path: str, class_names: list[str]) -> None:
+def save_checkpoint(model: nn.Module, path: str, class_names: list[str], model_type: str) -> None:
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "class_names": class_names,
             "num_classes": len(class_names),
             "img_size": 128,
+            "model_type": model_type,
         },
         path,
     )
@@ -144,7 +160,14 @@ def main() -> None:
         pin_memory=device.type == "cuda",
     )
 
-    model = CategorySorter(num_classes=full_dataset.num_classes).to(device)
+    if args.model_type == "category_sorter":
+        model = CategorySorter(num_classes=full_dataset.num_classes).to(device)
+    elif args.model_type == "sorter_mini":
+        model = MobileNetV3Mini(num_classes=full_dataset.num_classes).to(device)
+    elif args.model_type == "sorter_mobilenet":
+        model = MobileNetV3Small(num_classes=full_dataset.num_classes, pretrained=True).to(device)
+    elif args.model_type == "sorter":
+        model = CustomCNN(num_classes=full_dataset.num_classes).to(device)
 
     # Startup message
     total_params = sum(p.numel() for p in model.parameters())
@@ -173,12 +196,12 @@ def main() -> None:
     best_val_acc = [0.0] * num_classes
     best_val_epoch = 0
     best_checkpoint_path = os.path.join(args.output_dir, "best_model.pth")
-    history: dict = {"train_loss": [], "val_loss": [], "val_accuracy_per_class": []}
+    history: dict = {"timestamp": [] ,"train_loss": [], "val_loss": [], "val_accuracy_per_class": []}
 
     def _save_and_exit(signum, frame) -> None:
         print("\nInterrupted — saving current model …")
         interrupted_path = os.path.join(args.output_dir, "interrupted_model.pth")
-        save_checkpoint(model, interrupted_path, class_names)
+        save_checkpoint(model, interrupted_path, class_names, args.model_type)
         _flush_history()
         print(f"Saved to {interrupted_path}")
         sys.exit(0)
@@ -192,15 +215,17 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _save_and_exit)
 
     for epoch in range(1, args.epochs + 1):
-        if (epoch - best_val_epoch) >= 50:
-            print(f"\nEarly stopping triggered: No validation improvement for 20 epochs.")
+        if (epoch - best_val_epoch) >= args.early_stopping_tolerance:
+            print(f"\nEarly stopping triggered: No validation improvement for {args.early_stopping_tolerance} epochs.")
             break
+        timestamp = int(datetime.now().timestamp() * 1000) 
         train_loss = run_epoch(model, train_loader, criterion, optimizer, device, train=True)
         val_loss = run_epoch(model, val_loader, criterion, optimizer, device, train=False)
         val_acc = compute_val_accuracy(model, val_loader, device, num_classes)
 
         scheduler.step()
-
+        
+        history["timestamp"].append(timestamp)
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
         history["val_accuracy_per_class"].append(val_acc)
@@ -215,7 +240,7 @@ def main() -> None:
             best_val_loss = val_loss
             best_val_acc = val_acc
             best_val_epoch = epoch
-            save_checkpoint(model, best_checkpoint_path, class_names)
+            save_checkpoint(model, best_checkpoint_path, class_names, args.model_type)
 
     _flush_history()
 

@@ -1,571 +1,503 @@
 """
-Inference & Sorting Pipeline
-=============================
-1. Asks which model to use (Custom CNN or MobileNetV3)
-2. Loads the trained model
-3. Preprocesses all videos in the dataset folder (extract frames for classification)
-4. Classifies every image (and video frame) in dataset/
-5. Moves originals into test/<ClassName>/ subdirectories
-6. Cleans up temporary extracted frames
+classify.py — Interactive image sorter
+=======================================
+1. Select model architecture
+2. Select a .pth weights file
+3. Select input directory
+4. Sort images into class folders (skips files with confidence < 85%)
+5. Display timing summary
+6. Pause for review — press Enter to UNDO and move everything back
 """
 
 import os
 import sys
 import shutil
+import time
 import glob
+
 import torch
-import torchvision
+import torch.nn as nn
 from torchvision import transforms
 from PIL import Image
 
-# Try to import HEIC support — optional dependency
-try:
-    from pillow_heif import register_heif_opener
-    register_heif_opener()
-    HEIC_SUPPORTED = True
-except ImportError:
-    HEIC_SUPPORTED = False
-
-from preprocess_videos import extract_frames_from_video
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "models"))
+from models.DSC import CategorySorter
+from models.MobileNetV3_Mini import MobileNetV3Mini
+from models.MobileNetV3_Small import MobileNetV3Small
+from models.small_CNN import CustomCNN
+from preprocess_videos import extract_frames_from_video, VIDEO_EXTENSIONS
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-VIDEO_EXTENSIONS = ('.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v')
-IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif')
-HEIC_EXTENSIONS = ('.heic', '.heif')
-RAW_EXTENSIONS = ('.dng', '.cr2', '.nef', '.arw', '.orf', '.rw2')
+CONFIDENCE_THRESHOLD = 0.85
 
-# All extensions we can classify (images the model can read)
-CLASSIFIABLE_EXTENSIONS = IMAGE_EXTENSIONS + (HEIC_EXTENSIONS if HEIC_SUPPORTED else ())
+IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')
+# VIDEO_EXTENSIONS imported from preprocess_videos
 
-# All media we want to sort (including videos and RAW files we can't classify directly)
-ALL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS + HEIC_EXTENSIONS + RAW_EXTENSIONS + VIDEO_EXTENSIONS
-
-DATASET_DIR = 'dataset'
-OUTPUT_DIR = 'test'
-
-# ImageNet normalization (shared by both models)
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
+IMAGENET_STD  = [0.229, 0.224, 0.225]
+
+# Which model_type values are multi-label (sigmoid) vs single-label (softmax)
+MULTILABEL_TYPES = {"category_sorter"}
+
+# ─── Architecture registry ────────────────────────────────────────────────────
+
+ARCHITECTURES = [
+    {
+        "key":        "1",
+        "label":      "CategorySorter — depthwise separable CNN, multi-label (DSC.py)",
+        "model_type": "category_sorter",
+        "cls":        CategorySorter,
+        "img_size":   128,
+    },
+    {
+        "key":        "2",
+        "label":      "MobileNetV3-Mini — lightweight inverted residuals, single-label",
+        "model_type": "sorter_mini",
+        "cls":        MobileNetV3Mini,
+        "img_size":   160,
+    },
+    {
+        "key":        "3",
+        "label":      "MobileNetV3-Small — pretrained transfer learning, single-label",
+        "model_type": "sorter_mobilenet",
+        "cls":        MobileNetV3Small,
+        "img_size":   224,
+    },
+    {
+        "key":        "4",
+        "label":      "CustomCNN — small 4-block CNN, single-label",
+        "model_type": "sorter",
+        "cls":        CustomCNN,
+        "img_size":   128,
+    },
+]
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def hr(char="─", width=56):
+    print(char * width)
 
 
-# ─── Model Loading ───────────────────────────────────────────────────────────
-
-def load_custom_cnn(checkpoint_path, device):
-    """Load the custom tiny CNN from sorter.py."""
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    classes = checkpoint['classes']
-    img_size = checkpoint['img_size']
-    num_classes = len(classes)
-
-    net = torch.nn.Sequential(
-        # Block 1
-        torch.nn.Conv2d(3, 16, kernel_size=3, padding=1),
-        torch.nn.BatchNorm2d(16),
-        torch.nn.ReLU(),
-        torch.nn.MaxPool2d(2),
-        # Block 2
-        torch.nn.Conv2d(16, 32, kernel_size=3, padding=1),
-        torch.nn.BatchNorm2d(32),
-        torch.nn.ReLU(),
-        torch.nn.MaxPool2d(2),
-        # Block 3
-        torch.nn.Conv2d(32, 64, kernel_size=3, padding=1),
-        torch.nn.BatchNorm2d(64),
-        torch.nn.ReLU(),
-        torch.nn.MaxPool2d(2),
-        # Block 4
-        torch.nn.Conv2d(64, 128, kernel_size=3, padding=1),
-        torch.nn.BatchNorm2d(128),
-        torch.nn.ReLU(),
-        torch.nn.MaxPool2d(2),
-        # Head
-        torch.nn.AdaptiveAvgPool2d(1),
-        torch.nn.Flatten(),
-        torch.nn.Dropout(0.4),
-        torch.nn.Linear(128, 64),
-        torch.nn.ReLU(),
-        torch.nn.Linear(64, num_classes),
-    )
-
-    net.load_state_dict(checkpoint['model_state_dict'])
-    net.to(device)
-    net.eval()
-    return net, classes, img_size
+def header(title):
+    hr()
+    print(f"  {title}")
+    hr()
 
 
+def load_model(arch_info, pth_path, device):
+    """Load a .pth checkpoint, auto-detecting architecture from saved metadata."""
+    checkpoint = torch.load(pth_path, map_location=device, weights_only=False)
 
-def load_mobilenet(checkpoint_path, device):
-    """Load the MobileNetV3-Small model from sorter_mobilenet.py."""
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    classes = checkpoint['classes']
-    img_size = checkpoint['img_size']
-    num_classes = len(classes)
+    # Prefer metadata in checkpoint, fall back to the user-selected architecture
+    model_type  = checkpoint.get("model_type",  arch_info["model_type"])
+    class_names = checkpoint.get("class_names", None)
+    img_size    = checkpoint.get("img_size",    arch_info["img_size"])
 
-    model = torchvision.models.mobilenet_v3_small(weights=None)
-    in_features = model.classifier[0].in_features
-    model.classifier = torch.nn.Sequential(
-        torch.nn.Linear(in_features, 256),
-        torch.nn.Hardswish(),
-        torch.nn.Dropout(0.3),
-        torch.nn.Linear(256, num_classes),
-    )
+    # Map model_type → class
+    type_to_cls = {a["model_type"]: a["cls"] for a in ARCHITECTURES}
+    ModelCls = type_to_cls.get(model_type, arch_info["cls"])
 
-    model.load_state_dict(checkpoint['model_state_dict'])
+    num_classes = len(class_names) if class_names else 3
+
+    if model_type == "sorter_mobilenet":
+        model = ModelCls(num_classes=num_classes, pretrained=False)
+    else:
+        model = ModelCls(num_classes=num_classes)
+
+    state = checkpoint.get("model_state_dict", checkpoint)
+    model.load_state_dict(state)
     model.to(device)
     model.eval()
-    return model, classes, img_size
+
+    return model, class_names, img_size, model_type
 
 
-# ─── MobileNetV3 Mini Model Definition ────────────────────────────────────────
-
-class SqueezeExcitation(torch.nn.Module):
-    def __init__(self, channels, reduction=4):
-        super().__init__()
-        reduced_channels = max(1, channels // reduction)
-        self.se = torch.nn.Sequential(
-            torch.nn.AdaptiveAvgPool2d(1),
-            torch.nn.Conv2d(channels, reduced_channels, 1, bias=True),
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(reduced_channels, channels, 1, bias=True),
-            torch.nn.Hardsigmoid()
-        )
-    def forward(self, x):
-        return x * self.se(x)
-
-
-class InvertedResidual(torch.nn.Module):
-    def __init__(self, in_channels, exp_channels, out_channels, kernel_size, stride, use_se, act_layer):
-        super().__init__()
-        self.use_res_connect = stride == 1 and in_channels == out_channels
-        
-        layers = []
-        # Expand 1x1
-        if exp_channels != in_channels:
-            layers.append(torch.nn.Conv2d(in_channels, exp_channels, 1, stride=1, padding=0, bias=False))
-            layers.append(torch.nn.BatchNorm2d(exp_channels))
-            layers.append(act_layer())
-        
-        # Depthwise
-        padding = (kernel_size - 1) // 2
-        layers.append(torch.nn.Conv2d(exp_channels, exp_channels, kernel_size, stride, padding, groups=exp_channels, bias=False))
-        layers.append(torch.nn.BatchNorm2d(exp_channels))
-        layers.append(act_layer())
-        
-        # Squeeze-and-Excitation
-        if use_se:
-            layers.append(SqueezeExcitation(exp_channels))
-            
-        # Project 1x1
-        layers.append(torch.nn.Conv2d(exp_channels, out_channels, 1, stride=1, padding=0, bias=False))
-        layers.append(torch.nn.BatchNorm2d(out_channels))
-        
-        self.conv = torch.nn.Sequential(*layers)
-        
-    def forward(self, x):
-        if self.use_res_connect:
-            return x + self.conv(x)
-        else:
-            return self.conv(x)
-
-
-class MobileNetV3Mini(torch.nn.Module):
-    def __init__(self, num_classes=3):
-        super().__init__()
-        # Stem layer
-        self.stem = torch.nn.Sequential(
-            torch.nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1, bias=False),
-            torch.nn.BatchNorm2d(16),
-            torch.nn.Hardswish()
-        )
-        
-        # Core blocks (MobileNetV3 style: kernel, expansion, output, SE, activation, stride)
-        self.bneck = torch.nn.Sequential(
-            InvertedResidual(16, 16, 16, kernel_size=3, stride=1, use_se=True, act_layer=torch.nn.ReLU),
-            InvertedResidual(16, 48, 24, kernel_size=3, stride=2, use_se=False, act_layer=torch.nn.ReLU),
-            InvertedResidual(24, 72, 24, kernel_size=3, stride=1, use_se=False, act_layer=torch.nn.ReLU),
-            InvertedResidual(24, 72, 40, kernel_size=5, stride=2, use_se=True, act_layer=torch.nn.Hardswish),
-            InvertedResidual(40, 120, 40, kernel_size=5, stride=1, use_se=True, act_layer=torch.nn.Hardswish),
-            InvertedResidual(40, 120, 80, kernel_size=3, stride=2, use_se=False, act_layer=torch.nn.Hardswish),
-            InvertedResidual(80, 240, 80, kernel_size=3, stride=1, use_se=False, act_layer=torch.nn.Hardswish),
-        )
-        
-        # Last conv stage
-        self.conv_last = torch.nn.Sequential(
-            torch.nn.Conv2d(80, 240, kernel_size=1, stride=1, padding=0, bias=False),
-            torch.nn.BatchNorm2d(240),
-            torch.nn.Hardswish()
-        )
-        
-        self.pool = torch.nn.AdaptiveAvgPool2d(1)
-        
-        # Classifier
-        self.classifier = torch.nn.Sequential(
-            torch.nn.Linear(240, 120),
-            torch.nn.Hardswish(),
-            torch.nn.Dropout(0.3),
-            torch.nn.Linear(120, num_classes)
-        )
-        
-    def forward(self, x):
-        x = self.stem(x)
-        x = self.bneck(x)
-        x = self.conv_last(x)
-        x = self.pool(x)
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        return x
-
-
-def load_mobilenet_mini(checkpoint_path, device):
-    """Load the custom MobileNetV3-Mini model."""
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    classes = checkpoint['classes']
-    img_size = checkpoint['img_size']
-    num_classes = len(classes)
-    
-    model = MobileNetV3Mini(num_classes=num_classes)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.to(device)
-    model.eval()
-    return model, classes, img_size
-
-
-
-# ─── Inference ────────────────────────────────────────────────────────────────
-
-def get_transform(img_size, model_type):
-    """Build the inference transform (matches the validation transform from training)."""
-    if model_type == 'mobilenet':
+def build_transform(img_size, model_type):
+    """Deterministic validation transform matching the training pipeline."""
+    if model_type == "sorter_mobilenet":
         return transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(img_size),
             transforms.ToTensor(),
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ])
-    else:
-        return transforms.Compose([
-            transforms.Resize(img_size),
-            transforms.CenterCrop(img_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ])
+    return transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+    ])
 
 
-def classify_image(image_path, model, transform, classes, device):
-    """Classify a single image and return the predicted class name and confidence."""
+def predict(image_path, model, transform, class_names, device, model_type):
+    """
+    Run inference on one image.
+
+    Returns:
+        For single-label: list of at most one (class_name, confidence) tuple.
+        For multi-label:  list of (class_name, confidence) tuples for every
+                          class whose sigmoid probability ≥ CONFIDENCE_THRESHOLD.
+        Returns [] if nothing crosses the threshold.
+    """
     try:
-        img = Image.open(image_path).convert('RGB')
+        img = Image.open(image_path).convert("RGB")
     except Exception as e:
-        print(f"  ⚠ Could not open {os.path.basename(image_path)}: {e}")
-        return None, 0.0
+        print(f"  ⚠  Cannot open {os.path.basename(image_path)}: {e}")
+        return []
 
-    input_tensor = transform(img).unsqueeze(0).to(device)
+    tensor = transform(img).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        outputs = model(input_tensor)
-        probabilities = torch.nn.functional.softmax(outputs, dim=1)
-        confidence, predicted_idx = torch.max(probabilities, 1)
+        logits = model(tensor)
 
-    return classes[predicted_idx.item()], confidence.item()
+        if model_type in MULTILABEL_TYPES:
+            probs = torch.sigmoid(logits)[0]
+            results = [
+                (class_names[i], float(probs[i]))
+                for i in range(len(class_names))
+                if float(probs[i]) >= CONFIDENCE_THRESHOLD
+            ]
+        else:
+            probs = torch.softmax(logits, dim=1)[0]
+            conf, idx = torch.max(probs, 0)
+            conf = float(conf)
+            if conf >= CONFIDENCE_THRESHOLD:
+                results = [(class_names[idx.item()], conf)]
+            else:
+                results = []
+
+    return results
 
 
-def classify_video_via_frames(video_path, model, transform, classes, device):
+def classify_video(video_path, model, transform, class_names, device, model_type):
     """
-    Classify a video by extracting temporary frames, classifying each,
-    and returning the majority-vote class.
-    Returns (predicted_class, avg_confidence, list_of_temp_frame_paths).
+    Extract frames via preprocess_videos, classify each frame, and return
+    the majority-vote result as a list of (class_name, avg_confidence) tuples.
+
+    For single-label models: returns at most one tuple (the winning class).
+    For multi-label models:  returns all classes that won a majority across frames.
+    Returns [] if no frames could be extracted or nothing clears the threshold.
     """
     base_name = os.path.splitext(os.path.basename(video_path))[0]
-    temp_dir = os.path.join(DATASET_DIR, f'.tmp_frames_{base_name}')
-    os.makedirs(temp_dir, exist_ok=True)
+    tmp_dir   = os.path.join(os.path.dirname(video_path), f".tmp_frames_{base_name}")
+    os.makedirs(tmp_dir, exist_ok=True)
 
-    frame_paths = extract_frames_from_video(video_path, temp_dir, base_name)
+    frame_paths = extract_frames_from_video(video_path, tmp_dir, base_name)
 
     if not frame_paths:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        return None, 0.0, []
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return []
 
-    # Classify each frame
-    votes = {}
-    total_conf = {}
+    # Tally votes and cumulative confidence per class
+    votes      = {cls: 0   for cls in class_names}
+    total_conf = {cls: 0.0 for cls in class_names}
+
     for fp in frame_paths:
-        cls, conf = classify_image(fp, model, transform, classes, device)
-        if cls is not None:
-            votes[cls] = votes.get(cls, 0) + 1
-            total_conf[cls] = total_conf.get(cls, 0.0) + conf
+        hits = predict(fp, model, transform, class_names, device, model_type)
+        for cls_name, conf in hits:
+            votes[cls_name]      += 1
+            total_conf[cls_name] += conf
 
-    if not votes:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        return None, 0.0, []
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # Majority vote (tie-break by total confidence)
-    best_class = max(votes, key=lambda c: (votes[c], total_conf[c]))
-    avg_conf = total_conf[best_class] / votes[best_class]
+    n_frames = len(frame_paths)
 
-    return best_class, avg_conf, temp_dir
+    if model_type in MULTILABEL_TYPES:
+        # Multi-label: keep any class that received votes from a majority of frames
+        results = [
+            (cls, total_conf[cls] / votes[cls])
+            for cls in class_names
+            if votes[cls] > n_frames / 2
+        ]
+    else:
+        # Single-label: pick the class with the most votes (tie-break: higher avg conf)
+        best = max(class_names, key=lambda c: (votes[c], total_conf[c]))
+        if votes[best] == 0:
+            results = []
+        else:
+            avg_conf = total_conf[best] / votes[best]
+            results = [(best, avg_conf)] if avg_conf >= CONFIDENCE_THRESHOLD else []
+
+    return results
 
 
-# ─── Main Pipeline ───────────────────────────────────────────────────────────
+def safe_dest(folder, filename):
+    """Return a collision-free destination path inside folder."""
+    dest = os.path.join(folder, filename)
+    if not os.path.exists(dest):
+        return dest
+    base, ext = os.path.splitext(filename)
+    counter = 1
+    while os.path.exists(dest):
+        dest = os.path.join(folder, f"{base}_{counter}{ext}")
+        counter += 1
+    return dest
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using {device} for inference")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ── Step 1: Ask which model to use ──────────────────────────────────────
-    print("\n" + "=" * 50)
-    print("  SELECT MODEL")
-    print("=" * 50)
+    # ── Step 1: Choose architecture ──────────────────────────────────────────
+    header("STEP 1 — SELECT ARCHITECTURE")
+    for arch in ARCHITECTURES:
+        print(f"  [{arch['key']}] {arch['label']}")
+    print()
 
-    # Detect available model files
-    custom_available = os.path.exists('sorter_model.pth')
-    mobilenet_available = os.path.exists('mobilenet_model.pth')
-    mini_available = os.path.exists('sorter_mini_model.pth')
-
-    if not custom_available and not mobilenet_available and not mini_available:
-        print("\n✗ No trained models found!")
-        print("  Run 'python sorter.py', 'python sorter_mobilenet.py' or 'python sorter_mini.py' first.")
-        sys.exit(1)
-
-    options = []
-    if custom_available:
-        options.append(('1', 'Custom CNN (sorter_model.pth)', 'custom'))
-    if mobilenet_available:
-        options.append(('2', 'MobileNetV3-Small (mobilenet_model.pth)', 'mobilenet'))
-    if mini_available:
-        options.append(('3', 'MobileNetV3-Mini (sorter_mini_model.pth)', 'mini'))
-
-    for key, label, _ in options:
-        print(f"  [{key}] {label}")
-
+    valid_keys = [a["key"] for a in ARCHITECTURES]
     while True:
-        choice = input("\nEnter choice: ").strip()
-        valid_keys = [o[0] for o in options]
+        choice = input("Architecture: ").strip()
         if choice in valid_keys:
-            model_type = next(o[2] for o in options if o[0] == choice)
+            arch_info = next(a for a in ARCHITECTURES if a["key"] == choice)
             break
-        print(f"  Invalid choice. Enter one of: {', '.join(valid_keys)}")
+        print(f"  Enter one of: {', '.join(valid_keys)}")
 
-    # ── Step 2: Load the model ──────────────────────────────────────────────
-    print(f"\nLoading model...")
-    if model_type == 'custom':
-        model, classes, img_size = load_custom_cnn('sorter_model.pth', device)
-    elif model_type == 'mini':
-        model, classes, img_size = load_mobilenet_mini('sorter_mini_model.pth', device)
+    # ── Step 2: Select .pth file ─────────────────────────────────────────────
+    header("STEP 2 — SELECT WEIGHTS FILE (.pth)")
+
+    # Scan for .pth files to offer as suggestions
+    pth_files = sorted(glob.glob("**/*.pth", recursive=True) + glob.glob("*.pth"))
+    if pth_files:
+        print("  Found checkpoints:")
+        for i, f in enumerate(pth_files[:10], 1):
+            print(f"    [{i}] {f}")
+        print()
+        print("  Enter a number to select, or paste a full path.")
     else:
-        model, classes, img_size = load_mobilenet('mobilenet_model.pth', device)
+        print("  No .pth files found in current directory tree.")
+        print("  Paste the full path to your weights file.")
 
-    print(f"  Model: {model_type}")
-    print(f"  Classes: {classes}")
-    print(f"  Input size: {img_size}x{img_size}")
+    print()
+    while True:
+        raw = input("Weights: ").strip()
+        # Allow selecting by index from the list
+        if raw.isdigit() and pth_files and 1 <= int(raw) <= len(pth_files[:10]):
+            pth_path = pth_files[int(raw) - 1]
+        else:
+            pth_path = raw
+        if os.path.isfile(pth_path) and pth_path.endswith(".pth"):
+            break
+        print(f"  File not found or not a .pth: {pth_path}")
 
-    transform = get_transform(img_size, model_type)
+    # ── Step 3: Select input directory ───────────────────────────────────────
+    header("STEP 3 — SELECT INPUT DIRECTORY")
+    while True:
+        input_dir = input("Input folder: ").strip()
+        if os.path.isdir(input_dir):
+            break
+        print(f"  Directory not found: {input_dir}")
 
-    # ── Step 3: Create output directories ───────────────────────────────────
-    for cls in classes:
-        os.makedirs(os.path.join(OUTPUT_DIR, cls), exist_ok=True)
-    # Folder for files we cannot classify (HEIC, RAW, unrecognized, or failed classification)
-    os.makedirs(os.path.join(OUTPUT_DIR, 'Unsortable'), exist_ok=True)
+    # ── Step 4: Load model ───────────────────────────────────────────────────
+    header("LOADING MODEL")
+    model, class_names, img_size, model_type = load_model(arch_info, pth_path, device)
+    is_multilabel = model_type in MULTILABEL_TYPES
+    total_params  = sum(p.numel() for p in model.parameters())
 
-    # ── Step 4: Scan dataset folder ─────────────────────────────────────────
-    if not os.path.exists(DATASET_DIR):
-        print(f"\n✗ '{DATASET_DIR}' directory not found!")
-        sys.exit(1)
+    print(f"  Architecture : {arch_info['cls'].__name__}")
+    print(f"  Model type   : {'multi-label' if is_multilabel else 'single-label'}")
+    print(f"  Parameters   : {total_params:,}")
+    print(f"  Classes      : {class_names}")
+    print(f"  Input size   : {img_size}×{img_size}")
+    print(f"  Device       : {device}" +
+          (f" ({torch.cuda.get_device_name(device)})" if device.type == "cuda" else ""))
+    print(f"  Threshold    : {CONFIDENCE_THRESHOLD:.0%}")
 
-    all_files = [
-        f for f in os.listdir(DATASET_DIR)
-        if os.path.isfile(os.path.join(DATASET_DIR, f))
-        and not f.startswith('.')
+    transform = build_transform(img_size, model_type)
+
+    # ── Step 5: Collect images ───────────────────────────────────────────────
+    all_images = [
+        os.path.join(root, f)
+        for root, _, files in os.walk(input_dir)
+        for f in files
+        if f.lower().endswith(IMAGE_EXTENSIONS) and not f.startswith(".")
+        and not os.path.join(root, f).startswith(os.path.join(input_dir, "sorted"))
     ]
 
-    # Categorize files
-    images = [f for f in all_files if f.lower().endswith(CLASSIFIABLE_EXTENSIONS)]
-    videos = [f for f in all_files if f.lower().endswith(VIDEO_EXTENSIONS)]
-    heic_unsupported = (
-        [f for f in all_files if f.lower().endswith(HEIC_EXTENSIONS)]
-        if not HEIC_SUPPORTED else []
-    )
-    raw_files = [f for f in all_files if f.lower().endswith(RAW_EXTENSIONS)]
-    unrecognized = [
-        f for f in all_files
-        if not f.lower().endswith(ALL_MEDIA_EXTENSIONS)
-        and f not in ('Thumbs.db', 'desktop.ini', '.DS_Store')
+    all_videos = [
+        os.path.join(root, f)
+        for root, _, files in os.walk(input_dir)
+        for f in files
+        if f.lower().endswith(VIDEO_EXTENSIONS) and not f.startswith(".")
+        and not os.path.join(root, f).startswith(os.path.join(input_dir, "sorted"))
     ]
 
-    print(f"\n{'=' * 50}")
-    print(f"  DATASET SUMMARY")
-    print(f"{'=' * 50}")
-    print(f"  Classifiable images : {len(images)}")
-    print(f"  Videos              : {len(videos)}")
-    if heic_unsupported:
-        print(f"  HEIC (no support)   : {len(heic_unsupported)}")
-    if raw_files:
-        print(f"  RAW files           : {len(raw_files)}")
-    if unrecognized:
-        print(f"  Unrecognized        : {len(unrecognized)}")
-
-    if heic_unsupported:
-        print(f"\n  ⚠ {len(heic_unsupported)} HEIC files cannot be classified.")
-        print(f"    Install 'pillow-heif' (pip install pillow-heif) for HEIC support.")
-        print(f"    These files will be moved to '{OUTPUT_DIR}/Unsortable/'.")
-
-    total = len(images) + len(videos) + len(heic_unsupported) + len(raw_files)
-    if total == 0:
-        print("\n  Nothing to sort!")
+    if not all_images and not all_videos:
+        print(f"\n  No images or videos found in {input_dir}")
         sys.exit(0)
 
-    print(f"\n  Total files to sort: {total}")
-    input("\nPress Enter to start sorting...")
+    print(f"  Found {len(all_images)} image(s) and {len(all_videos)} video(s).")
 
-    # ── Step 5: Classify and sort images ────────────────────────────────────
-    print(f"\n{'=' * 50}")
-    print(f"  SORTING IMAGES")
-    print(f"{'=' * 50}")
+    # ── Step 6: Create output folders ────────────────────────────────────────
+    output_root = os.path.join(input_dir, "sorted")
+    for cls in class_names:
+        os.makedirs(os.path.join(output_root, cls), exist_ok=True)
+    os.makedirs(os.path.join(output_root, "Unsorted"), exist_ok=True)
 
-    sorted_count = 0
-    failed_count = 0
-    class_counts = {cls: 0 for cls in classes}
+    # ── Step 7: Sort ─────────────────────────────────────────────────────────
+    header(f"SORTING {len(all_images)} IMAGE(S) + {len(all_videos)} VIDEO(S)")
+    input("  Press Enter to start...\n")
 
-    for i, filename in enumerate(images, 1):
-        filepath = os.path.join(DATASET_DIR, filename)
-        predicted_class, confidence = classify_image(filepath, model, transform, classes, device)
+    # move_log: list of (original_path, [destination_paths], is_copy)
+    # For multi-label images copied to multiple folders, one entry per destination.
+    # Entries where is_copy=True are copies (originals already accounted for by move).
+    #
+    # Simpler: track as list of (src, dst) with type="move" or "copy"
+    # Undo: reverse moves, delete copies.
+    ops: list[dict] = []   # {"src": str, "dst": str, "op": "move"|"copy"}
 
-        if predicted_class is not None:
-            dest = os.path.join(OUTPUT_DIR, predicted_class, filename)
-            # Handle filename collisions
-            if os.path.exists(dest):
-                base, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(dest):
-                    dest = os.path.join(OUTPUT_DIR, predicted_class, f"{base}_{counter}{ext}")
-                    counter += 1
-            shutil.move(filepath, dest)
-            class_counts[predicted_class] = class_counts.get(predicted_class, 0) + 1
+    start_time = time.perf_counter()
+
+    sorted_count   = 0
+    unsorted_count = 0
+    class_tally    = {cls: 0 for cls in class_names}
+
+    for i, img_path in enumerate(all_images, 1):
+        filename = os.path.basename(img_path)
+        hits = predict(img_path, model, transform, class_names, device, model_type)
+
+        prefix = f"  [{i:>{len(str(len(all_images)))}}/{len(all_images)}]"
+
+        if not hits:
+            # Below threshold → move to Unsorted
+            dst = safe_dest(os.path.join(output_root, "Unsorted"), filename)
+            shutil.move(img_path, dst)
+            ops.append({"src": img_path, "dst": dst, "op": "move"})
+            unsorted_count += 1
+            print(f"{prefix} {filename}  →  Unsorted/  (below threshold)")
+        elif len(hits) == 1:
+            cls_name, conf = hits[0]
+            dst = safe_dest(os.path.join(output_root, cls_name), filename)
+            shutil.move(img_path, dst)
+            ops.append({"src": img_path, "dst": dst, "op": "move"})
+            class_tally[cls_name] += 1
             sorted_count += 1
-            print(f"  [{i}/{len(images)}] {filename} → {predicted_class}/ ({confidence:.0%})")
+            print(f"{prefix} {filename}  →  {cls_name}/  ({conf:.1%})")
         else:
-            # If we can't classify, dump to Unsortable
-            dest = os.path.join(OUTPUT_DIR, 'Unsortable', filename)
-            if os.path.exists(dest):
-                base, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(dest):
-                    dest = os.path.join(OUTPUT_DIR, 'Unsortable', f"{base}_{counter}{ext}")
-                    counter += 1
-            shutil.move(filepath, dest)
-            failed_count += 1
-            print(f"  [{i}/{len(images)}] {filename} → Unsortable/ (failed to classify)")
+            # Multi-label: copy to all but last class folder, move to last
+            labels_str = ", ".join(f"{cls}({conf:.0%})" for cls, conf in hits)
+            dst_paths = [
+                safe_dest(os.path.join(output_root, cls_name), filename)
+                for cls_name, _ in hits
+            ]
+            for dst in dst_paths[:-1]:
+                shutil.copy2(img_path, dst)
+                ops.append({"src": img_path, "dst": dst, "op": "copy"})
+            shutil.move(img_path, dst_paths[-1])
+            ops.append({"src": img_path, "dst": dst_paths[-1], "op": "move"})
+            for cls_name, _ in hits:
+                class_tally[cls_name] += 1
+            sorted_count += 1
+            print(f"{prefix} {filename}  →  [{labels_str}]")
 
-    # ── Step 6: Classify and sort videos ────────────────────────────────────
-    if videos:
-        print(f"\n{'=' * 50}")
-        print(f"  SORTING VIDEOS")
-        print(f"{'=' * 50}")
+    # ── Video sorting ─────────────────────────────────────────────────────────
+    if all_videos:
+        print()
+        hr()
+        print(f"  SORTING {len(all_videos)} VIDEO(S)  [extracting frames + majority vote]")
+        hr()
 
-        for i, filename in enumerate(videos, 1):
-            filepath = os.path.join(DATASET_DIR, filename)
-            predicted_class, confidence, temp_dir = classify_video_via_frames(
-                filepath, model, transform, classes, device
-            )
+    for i, vid_path in enumerate(all_videos, 1):
+        filename = os.path.basename(vid_path)
+        prefix   = f"  [V{i:>{len(str(len(all_videos)))}}/{len(all_videos)}]"
+        print(f"{prefix} {filename}  — extracting frames...", end="", flush=True)
 
-            # Clean up temporary frames
-            if temp_dir and os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir, ignore_errors=True)
+        hits = classify_video(vid_path, model, transform, class_names, device, model_type)
 
-            if predicted_class is not None:
-                dest = os.path.join(OUTPUT_DIR, predicted_class, filename)
-                if os.path.exists(dest):
-                    base, ext = os.path.splitext(filename)
-                    counter = 1
-                    while os.path.exists(dest):
-                        dest = os.path.join(OUTPUT_DIR, predicted_class, f"{base}_{counter}{ext}")
-                        counter += 1
-                shutil.move(filepath, dest)
-                class_counts[predicted_class] = class_counts.get(predicted_class, 0) + 1
-                sorted_count += 1
-                print(f"  [{i}/{len(videos)}] {filename} → {predicted_class}/ ({confidence:.0%})")
-            else:
-                dest = os.path.join(OUTPUT_DIR, 'Unsortable', filename)
-                if os.path.exists(dest):
-                    base, ext = os.path.splitext(filename)
-                    counter = 1
-                    while os.path.exists(dest):
-                        dest = os.path.join(OUTPUT_DIR, 'Unsortable', f"{base}_{counter}{ext}")
-                        counter += 1
-                shutil.move(filepath, dest)
-                failed_count += 1
-                print(f"  [{i}/{len(videos)}] {filename} → Unsortable/ (failed to classify)")
+        if not hits:
+            dst = safe_dest(os.path.join(output_root, "Unsorted"), filename)
+            shutil.move(vid_path, dst)
+            ops.append({"src": vid_path, "dst": dst, "op": "move"})
+            unsorted_count += 1
+            print(f"  →  Unsorted/  (below threshold or unreadable)")
+        elif len(hits) == 1:
+            cls_name, conf = hits[0]
+            dst = safe_dest(os.path.join(output_root, cls_name), filename)
+            shutil.move(vid_path, dst)
+            ops.append({"src": vid_path, "dst": dst, "op": "move"})
+            class_tally[cls_name] = class_tally.get(cls_name, 0) + 1
+            sorted_count += 1
+            print(f"  →  {cls_name}/  ({conf:.1%} avg, majority vote)")
+        else:
+            labels_str = ", ".join(f"{cls}({conf:.0%})" for cls, conf in hits)
+            dst_paths  = [
+                safe_dest(os.path.join(output_root, cls_name), filename)
+                for cls_name, _ in hits
+            ]
+            for dst in dst_paths[:-1]:
+                shutil.copy2(vid_path, dst)
+                ops.append({"src": vid_path, "dst": dst, "op": "copy"})
+            shutil.move(vid_path, dst_paths[-1])
+            ops.append({"src": vid_path, "dst": dst_paths[-1], "op": "move"})
+            for cls_name, _ in hits:
+                class_tally[cls_name] = class_tally.get(cls_name, 0) + 1
+            sorted_count += 1
+            print(f"  →  [{labels_str}]  (majority vote)")
 
-    # ── Step 7: Move unsupported HEIC files to Unsortable ──────────────────
-    if heic_unsupported:
-        print(f"\n{'=' * 50}")
-        print(f"  MOVING UNSUPPORTED HEIC FILES → Unsortable/")
-        print(f"{'=' * 50}")
+    elapsed = time.perf_counter() - start_time
 
-        for filename in heic_unsupported:
-            filepath = os.path.join(DATASET_DIR, filename)
-            dest = os.path.join(OUTPUT_DIR, 'Unsortable', filename)
-            if os.path.exists(dest):
-                base, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(dest):
-                    dest = os.path.join(OUTPUT_DIR, 'Unsortable', f"{base}_{counter}{ext}")
-                    counter += 1
-            shutil.move(filepath, dest)
-            print(f"  {filename} → Unsortable/")
+    # ── Step 8: Summary ───────────────────────────────────────────────────────
+    header("SORT COMPLETE")
+    print(f"  Total images   : {len(all_images)}")
+    print(f"  Sorted         : {sorted_count}")
+    print(f"  Unsorted (<{CONFIDENCE_THRESHOLD:.0%}): {unsorted_count}")
+    print(f"  Time elapsed   : {elapsed:.1f}s  ({len(all_images)/elapsed:.1f} img/s)")
+    print()
+    print("  Per-class breakdown:")
+    for cls in class_names:
+        print(f"    {cls:>14s}: {class_tally[cls]}")
+    print()
+    print(f"  Sorted output  : {os.path.abspath(output_root)}/")
 
-    # ── Step 8: Move RAW files to Unsortable (can't classify) ────────────────
-    if raw_files:
-        print(f"\n{'=' * 50}")
-        print(f"  MOVING RAW FILES → Unsortable/")
-        print(f"{'=' * 50}")
+    # ── Step 9: Pause for review then undo ───────────────────────────────────
+    print()
+    hr("═")
+    print("  Review the sorted folders now.")
+    print("  When done, press Enter to UNDO all moves and restore originals.")
+    hr("═")
+    input()
 
-        for filename in raw_files:
-            filepath = os.path.join(DATASET_DIR, filename)
-            dest = os.path.join(OUTPUT_DIR, 'Unsortable', filename)
-            if os.path.exists(dest):
-                base, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(dest):
-                    dest = os.path.join(OUTPUT_DIR, 'Unsortable', f"{base}_{counter}{ext}")
-                    counter += 1
-            shutil.move(filepath, dest)
-            print(f"  {filename} → Unsortable/")
-    # ── Step 9: Move unrecognized files to Unsortable ───────────────────────
-    if unrecognized:
-        print(f"\n{'=' * 50}")
-        print(f"  MOVING UNRECOGNIZED FILES → Unsortable/")
-        print(f"{'=' * 50}")
-        for filename in unrecognized:
-            filepath = os.path.join(DATASET_DIR, filename)
-            dest = os.path.join(OUTPUT_DIR, 'Unsortable', filename)
-            if os.path.exists(dest):
-                base, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(dest):
-                    dest = os.path.join(OUTPUT_DIR, 'Unsortable', f"{base}_{counter}{ext}")
-                    counter += 1
-            shutil.move(filepath, dest)
-            print(f"  {filename} → Unsortable/")
-    # ── Step 9: Final cleanup ───────────────────────────────────────────────
-    # Remove any leftover temp frame directories
-    for item in os.listdir(DATASET_DIR):
-        item_path = os.path.join(DATASET_DIR, item)
-        if os.path.isdir(item_path) and item.startswith('.tmp_frames_'):
-            shutil.rmtree(item_path, ignore_errors=True)
+    header("UNDOING SORT")
+    undo_start = time.perf_counter()
+    errors = 0
 
-    # ── Summary ─────────────────────────────────────────────────────────────
-    print(f"\n{'=' * 50}")
-    print(f"  SORTING COMPLETE")
-    print(f"{'=' * 50}")
-    print(f"  Successfully sorted : {sorted_count}")
-    print(f"  Failed / Unsortable : {failed_count + len(heic_unsupported) + len(raw_files) + len(unrecognized)}")
-    print(f"\n  Per-class breakdown:")
-    for cls in classes:
-        count = class_counts.get(cls, 0)
-        print(f"    {cls:>10s}: {count}")
-    print(f"\n  Output directory: {os.path.abspath(OUTPUT_DIR)}/")
+    # Process in reverse order so multi-label moves restore correctly
+    for record in reversed(ops):
+        src, dst, op = record["src"], record["dst"], record["op"]
+        try:
+            if op == "move":
+                # Move back: dst → original src location
+                os.makedirs(os.path.dirname(src), exist_ok=True)
+                shutil.move(dst, src)
+            elif op == "copy":
+                # Delete the copy
+                if os.path.exists(dst):
+                    os.remove(dst)
+        except Exception as e:
+            print(f"  ⚠  Could not undo {dst}: {e}")
+            errors += 1
+
+    # Remove empty sorted sub-folders
+    for cls in list(class_names) + ["Unsorted"]:
+        folder = os.path.join(output_root, cls)
+        try:
+            if os.path.isdir(folder) and not os.listdir(folder):
+                os.rmdir(folder)
+        except Exception:
+            pass
+    try:
+        if os.path.isdir(output_root) and not os.listdir(output_root):
+            os.rmdir(output_root)
+    except Exception:
+        pass
+
+    undo_elapsed = time.perf_counter() - undo_start
+    print(f"  Restored {len(ops) - errors} operations in {undo_elapsed:.1f}s.")
+    if errors:
+        print(f"  ⚠  {errors} operations could not be undone — check output above.")
+    else:
+        print("  ✓  All files restored to original locations.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

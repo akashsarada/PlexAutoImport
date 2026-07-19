@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-
 class DepthwiseSeparableConv(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1) -> None:
         super().__init__()
@@ -24,21 +23,21 @@ class CategorySorter(nn.Module):
     def __init__(self, num_classes: int = 3) -> None:
         super().__init__()
         self.entry = nn.Sequential(
-            nn.Conv2d(3, 16, 3, padding=1, bias=False),
-            nn.BatchNorm2d(16),
+            nn.Conv2d(3, 32, 3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
         )
         self.blocks = nn.Sequential(
-            DepthwiseSeparableConv(16, 32, stride=2),
             DepthwiseSeparableConv(32, 64, stride=2),
-            DepthwiseSeparableConv(64, 96, stride=2),
-            DepthwiseSeparableConv(96, 128, stride=2),
+            DepthwiseSeparableConv(64, 128, stride=2),
+            DepthwiseSeparableConv(128, 192, stride=2),
+            DepthwiseSeparableConv(192, 256, stride=2),
         )
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Dropout(0.3),
-            nn.Linear(128, num_classes),
+            nn.Linear(256, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

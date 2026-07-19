@@ -1,10 +1,10 @@
 """
-AISorterPipeline — cascading 4-stage photo inference executor.
+AISorterPipeline — cascading photo inference executor.
 
-Stage 1: Face detection (always)
-Stage 2: Face identification (only when faces found and references loaded)
-Stage 3: Category classification via ONNX (always)
-Stage 4: EXIF keyword write + folder routing
+Stage 1: Category classification via ONNX (always)
+Stage 2: Face detection (only when "people" category predicted)
+Stage 3: Face identification (only when faces found and references loaded)
+Stage 4: EXIF keyword write 
 """
 
 import argparse
@@ -21,12 +21,11 @@ import onnxruntime as ort
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent / "models"))
-from face_detector import FaceDetector
-from face_identifier import FaceIdentifier
+from models.face_detector import FaceDetector
+from models.face_identifier import FaceIdentifier
 
 sys.path.insert(0, str(Path(__file__).parent))
 from exif_writer import write_keywords
-from router import PhotoRouter
 
 CATEGORY_LABELS: list[str] = ["cars", "people", "scenery"]
 
@@ -68,29 +67,13 @@ class AISorterPipeline:
         )
         self._category_input_name: str = self._category_session.get_inputs()[0].name
 
-        self._router = PhotoRouter(output_root)
-
     def process_image(self, image_path: str) -> dict:
-        """Run all 4 stages on a single image and route it to its destination."""
+        """Run all stages on a single image and route it to its destination."""
         bgr = cv2.imread(image_path)
         if bgr is None:
             raise ValueError(f"Could not read image: {image_path}")
 
-        face_boxes = self._face_detector.detect(bgr)
-
-        identities: list[str] = []
-        if face_boxes and self._face_identifier is not None:
-            for face in face_boxes:
-                x1, y1, x2, y2 = (int(v) for v in face["bbox"])
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(bgr.shape[1], x2), min(bgr.shape[0], y2)
-                if x2 <= x1 or y2 <= y1:
-                    continue
-                crop = bgr[y1:y2, x1:x2]
-                name = self._face_identifier.identify(crop)
-                if name is not None and name not in identities:
-                    identities.append(name)
-
+        # Stage 1: Category classification via ONNX
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         resized = cv2.resize(rgb, _CATEGORY_INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
         normalized = (resized.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
@@ -100,9 +83,27 @@ class AISorterPipeline:
         probs = _sigmoid(logits[0])
         categories = [CATEGORY_LABELS[i] for i, p in enumerate(probs) if p >= _CATEGORY_THRESHOLD]
 
+        # Stage 2 & 3: Face detection & identification (only if "people" category predicted)
+        face_boxes = []
+        identities: list[str] = []
+        if any(c.lower() == "people" for c in categories):
+            face_boxes = self._face_detector.detect(bgr)
+
+            if face_boxes and self._face_identifier is not None:
+                for face in face_boxes:
+                    x1, y1, x2, y2 = (int(v) for v in face["bbox"])
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(bgr.shape[1], x2), min(bgr.shape[0], y2)
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+                    crop = bgr[y1:y2, x1:x2]
+                    name = self._face_identifier.identify(crop)
+                    if name is not None and name not in identities:
+                        identities.append(name)
+
+        # Stage 4: EXIF keyword write + folder routing
         labels = list(identities) + [c for c in categories if c not in identities]
         write_keywords(image_path, labels)
-        destinations = self._router.route(image_path, labels)
 
         return {
             "image": image_path,
@@ -110,7 +111,6 @@ class AISorterPipeline:
             "identities": identities,
             "categories": categories,
             "labels": labels,
-            "destinations": destinations,
         }
 
     def process_directory(
