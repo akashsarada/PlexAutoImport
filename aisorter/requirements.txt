@@ -17,6 +17,7 @@ numpy==1.26.4
 Pillow==10.4.0
 requests==2.32.3
 tqdm==4.66.4
+onnx==1.22.0
 
 # --- Train-only dependencies (not required on the NAS) ---
 torch==2.3.1

@@ -4,6 +4,8 @@ import shutil
 import sys
 import time
 
+from aisorter.pipeline import AISorterPipeline
+
 def move_file(src, dest):
     if os.path.exists(src):
         if os.path.exists(dest):
@@ -39,13 +41,23 @@ if __name__ == '__main__':
     if not os.path.exists(dest):
         os.makedirs(dest)
 
+    model = sys.argv[3].removeprefix("[").removesuffix("]")
+
     files = list(os.listdir(src))
+    print(f"Found {len(files)} images to sort")
     for file in files:
         filePath = os.path.join(src, file)
 
-        extensions = ["jpg", ".png", ".jpeg", ".gif", "mp4", ".heic", ".dng"]
-        if os.path.splitext(filePath) in extensions:
+        extensions = [".jpg", ".png", ".jpeg", ".gif", ".mp4", ".heic", ".dng"]
+        if os.path.splitext(filePath)[1].lower() in extensions:
             creation_year = datetime.datetime.fromtimestamp(os.path.getmtime(filePath)).year
+
+            #run through ML models
+            pipeline = AISorterPipeline(
+                reference_dir=None,
+                category_model_path=model
+            )
+            results = pipeline.process_image(filePath)
 
             folder = "Photos from " + str(creation_year)
             if os.path.exists(os.path.join(dest, folder)):

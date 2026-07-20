@@ -21,8 +21,8 @@ import onnxruntime as ort
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent / "models"))
-from models.face_detector import FaceDetector
-from models.face_identifier import FaceIdentifier
+from face_detector import FaceDetector
+from face_identifier import FaceIdentifier
 
 sys.path.insert(0, str(Path(__file__).parent))
 from exif_writer import write_keywords
@@ -47,7 +47,6 @@ class AISorterPipeline:
 
     def __init__(
         self,
-        output_root: str,
         reference_dir: Optional[str] = None,
         category_model_path: Optional[str] = None,
         face_confidence: float = 0.7,
@@ -147,7 +146,6 @@ def main() -> None:
     args = parser.parse_args()
 
     pipeline = AISorterPipeline(
-        output_root=args.output,
         reference_dir=args.references,
         category_model_path=args.model,
         face_confidence=args.face_confidence,

@@ -9,7 +9,7 @@ def write_keywords(image_path: str, keywords: list[str]) -> None:
                 "EXIF:Keywords": keywords,
                 "XMP:Subject": keywords      # PhotoPrism reads both EXIF and XMP tags
             },
-            params=["-overwrite_original"]  # Prevents creating file backups on your NAS
+            params=["-overwrite_original", "-P"]  # Prevents creating file backups on your NAS and preserves file modification date
         )
 
 def read_keywords(image_path: str) -> list[str]:

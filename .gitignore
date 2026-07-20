@@ -7,13 +7,12 @@ __pycache__
 
 # custom importers
 AkashImporter.bat
+VivekImporter.bat
+RajeshreeImporter.bat
 
 # training data
 test
 dataset
 labeled
 results
-
-AkashImporter.bat
-VivekImporter.bat
-RajeshreeImporter.bat
+out
