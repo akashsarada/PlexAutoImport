@@ -1,15 +1,9 @@
 """Multi-label image dataset for the photo AI sorter.
 
-Labels (index → concept):
-  0 → car
-  1 → person
-  2 → scenery
-
 Folder names are matched by substring so any combination folder
 (e.g. 'cars_and_people') is decoded automatically.
 """
 
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -17,37 +11,29 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
+from tqdm import tqdm
 
-_LABEL_KEYWORDS: list[tuple[str, int]] = [
-    ("cars",    0),
-    ("people",  1),
-    ("scenery", 2),
-]
-
-_IMAGENET_MEAN = [0.485, 0.456, 0.406]
-_IMAGENET_STD  = [0.229, 0.224, 0.225]
-
-_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
-
+from constants import IMAGE_EXTENSIONS, IMAGENET_MEAN, IMAGENET_STD, LABEL_KEYWORDS, TRAINING_IMAGE_SIZE
+size = (TRAINING_IMAGE_SIZE, TRAINING_IMAGE_SIZE)
 
 def _folder_to_label(folder_name: str) -> torch.Tensor:
     name = folder_name.lower()
-    label = torch.zeros(3, dtype=torch.float32)
-    for keyword, idx in _LABEL_KEYWORDS:
+    label = torch.zeros(len(LABEL_KEYWORDS), dtype=torch.float32)
+    for keyword, idx in LABEL_KEYWORDS:
         if keyword in name:
             label[idx] = 1.0
     return label
 
 
 def _is_image(path: Path) -> bool:
-    return path.suffix.lower() in _IMAGE_EXTENSIONS
+    return path.suffix.lower() in IMAGE_EXTENSIONS
 
 
 class MultiLabelPhotoDataset(Dataset):
     """Folder-based multi-label image dataset.
 
-    Each immediate subdirectory of *root_dir* is mapped to a 3-element
-    multi-hot label vector via substring matching on the folder name.
+    Each immediate subdirectory of *root_dir* is mapped to a multi-hot label
+    vector via substring matching on the folder name.
     """
 
     def __init__(self, root_dir: str, transform: Optional[object] = None, in_memory: bool = False) -> None:
@@ -55,7 +41,7 @@ class MultiLabelPhotoDataset(Dataset):
         self.transform = transform
         self.in_memory = in_memory
         self.samples: list[tuple[Path, torch.Tensor]] = []
-        self.class_names = [keyword for keyword, _ in _LABEL_KEYWORDS]
+        self.class_names = [keyword for keyword, _ in LABEL_KEYWORDS]
         self.num_classes = len(self.class_names)
 
         temp_samples = []
@@ -69,13 +55,11 @@ class MultiLabelPhotoDataset(Dataset):
 
         if self.in_memory:
             self.cached_images = []
-            print(f"Pre-loading {len(temp_samples)} images into RAM (pre-resized to 128x128)...")
-            from tqdm import tqdm
+            print(f"Pre-loading {len(temp_samples)} images into RAM (pre-resized to {TRAINING_IMAGE_SIZE}px)...")
             for img_path, label in tqdm(temp_samples, desc="Caching to RAM"):
                 try:
                     with Image.open(img_path) as img:
-                        cached_img = img.convert("RGB").resize((128, 128))
-                        # Load to force reading pixel data fully into memory
+                        cached_img = img.convert("RGB").resize(size)
                         cached_img.load()
                         self.cached_images.append(cached_img)
                         self.samples.append((img_path, label))
@@ -94,7 +78,7 @@ class MultiLabelPhotoDataset(Dataset):
         else:
             img_path, label = self.samples[index]
             image = Image.open(img_path).convert("RGB")
-            
+
         if self.transform is not None:
             image = self.transform(image)
         return image, label
@@ -102,10 +86,10 @@ class MultiLabelPhotoDataset(Dataset):
 
 def build_transforms(train: bool) -> transforms.Compose:
     """Return torchvision transforms for training or validation."""
-    normalize = transforms.Normalize(mean=_IMAGENET_MEAN, std=_IMAGENET_STD)
+    normalize = transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
     if train:
         return transforms.Compose([
-            transforms.Resize((128, 128)),
+            transforms.Resize(size),
             transforms.RandomHorizontalFlip(),
             transforms.RandomRotation(15),
             transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
@@ -113,7 +97,7 @@ def build_transforms(train: bool) -> transforms.Compose:
             normalize,
         ])
     return transforms.Compose([
-        transforms.Resize((128, 128)),
+        transforms.Resize(size),
         transforms.ToTensor(),
         normalize,
     ])

@@ -1,6 +1,7 @@
-echo off
+@echo off
 title Plex Automatic Importer
-REM The Python script requires 2 arguments to run, the source path and the destination path
-REM Replace src with your source path in quotes
-REM Replace dest with your destination path in quotes
-C:/Users/%USERNAME%/AppData/Local/Programs/Python/Python311/python.exe main.py ["src"] ["dest"] 
+REM Usage: replace the placeholders below.
+REM   <src>   source folder containing media to import
+REM   <dest>  destination root (files land in "Photos from <year>" subfolders)
+REM   <model> path to the category classifier ONNX model
+python main.py "<src>" "<dest>" "<model>"

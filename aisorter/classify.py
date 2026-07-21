@@ -19,26 +19,23 @@ import torch
 import torch.nn as nn
 from torchvision import transforms
 from PIL import Image
+import pillow_heif
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "models"))
-from models.DSC import CategorySorter
-from models.MobileNetV3_Mini import MobileNetV3Mini
-from models.MobileNetV3_Small import MobileNetV3Small
-from models.small_CNN import CustomCNN
-from preprocess_videos import extract_frames_from_video, VIDEO_EXTENSIONS
+pillow_heif.register_heif_opener()
 
-# ─── Constants ────────────────────────────────────────────────────────────────
-
-CONFIDENCE_THRESHOLD = 0.85
-
-IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')
-# VIDEO_EXTENSIONS imported from preprocess_videos
-
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD  = [0.229, 0.224, 0.225]
-
-# Which model_type values are multi-label (sigmoid) vs single-label (softmax)
-MULTILABEL_TYPES = {"category_sorter"}
+from aisorter.models.DSC import CategorySorter
+from aisorter.models.MobileNetV3_Mini import MobileNetV3Mini
+from aisorter.models.MobileNetV3_Small import MobileNetV3Small
+from aisorter.models.small_CNN import CustomCNN
+from aisorter.preprocess_videos import extract_frames_from_video
+from constants import (
+    CLASSIFY_CONFIDENCE_THRESHOLD as CONFIDENCE_THRESHOLD,
+    IMAGE_EXTENSIONS,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    MULTILABEL_MODEL_TYPES as MULTILABEL_TYPES,
+    VIDEO_EXTENSIONS,
+)
 
 # ─── Architecture registry ────────────────────────────────────────────────────
 
@@ -87,7 +84,7 @@ def header(title):
 
 def load_model(arch_info, pth_path, device):
     """Load a .pth checkpoint, auto-detecting architecture from saved metadata."""
-    checkpoint = torch.load(pth_path, map_location=device, weights_only=False)
+    checkpoint = torch.load(pth_path, map_location=device, weights_only=True)
 
     # Prefer metadata in checkpoint, fall back to the user-selected architecture
     model_type  = checkpoint.get("model_type",  arch_info["model_type"])
@@ -338,12 +335,7 @@ def main():
     header(f"SORTING {len(all_images)} IMAGE(S) + {len(all_videos)} VIDEO(S)")
     input("  Press Enter to start...\n")
 
-    # move_log: list of (original_path, [destination_paths], is_copy)
-    # For multi-label images copied to multiple folders, one entry per destination.
-    # Entries where is_copy=True are copies (originals already accounted for by move).
-    #
-    # Simpler: track as list of (src, dst) with type="move" or "copy"
-    # Undo: reverse moves, delete copies.
+    # Undo reverses moves and deletes copies, in reverse order.
     ops: list[dict] = []   # {"src": str, "dst": str, "op": "move"|"copy"}
 
     start_time = time.perf_counter()

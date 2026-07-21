@@ -2,17 +2,16 @@
 
 import argparse
 import os
-import sys
 
 import numpy as np
 import torch
 import onnxruntime as ort
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "models"))
-from models.DSC import CategorySorter
-from models.MobileNetV3_Mini import MobileNetV3Mini
-from models.MobileNetV3_Small import MobileNetV3Small
-from models.small_CNN import CustomCNN
+from aisorter.models.DSC import CategorySorter
+from aisorter.models.MobileNetV3_Mini import MobileNetV3Mini
+from aisorter.models.MobileNetV3_Small import MobileNetV3Small
+from aisorter.models.small_CNN import CustomCNN
+from constants import CATEGORY_LABELS
 
 
 def _resolve_output_path(model_path: str, output_arg: str | None) -> str:
@@ -27,8 +26,8 @@ def _param_count(model: torch.nn.Module) -> int:
 
 
 def export(model_path: str, output_path: str, opset: int) -> str:
-    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-    class_names = checkpoint.get("class_names", ["cars", "people", "scenery"])
+    checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+    class_names = checkpoint.get("class_names", CATEGORY_LABELS)
     num_classes = len(class_names)
     model_type = checkpoint.get("model_type", "category_sorter")
 

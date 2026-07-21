@@ -6,7 +6,6 @@ Input resolution: 320 × 240 pixels.
 Weight source: https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB
 """
 
-import os
 import pathlib
 from typing import Optional
 
@@ -16,15 +15,15 @@ import onnxruntime as ort
 import requests
 from tqdm import tqdm
 
-_MODEL_URL = (
-    "https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB"
-    "/raw/master/models/onnx/version-RFB-320.onnx"
+from constants import (
+    FACE_DETECTOR_INPUT_HEIGHT as _INPUT_H,
+    FACE_DETECTOR_INPUT_WIDTH as _INPUT_W,
+    FACE_DETECTOR_MODEL_URL as _MODEL_URL,
+    FACE_NMS_IOU_THRESHOLD as _NMS_IOU_THRESHOLD,
+    MODEL_CACHE_DIR,
 )
-_DEFAULT_CACHE_PATH = pathlib.Path.home() / ".cache" / "aisorter" / "face_detector.onnx"
 
-_INPUT_W = 320
-_INPUT_H = 240
-_NMS_IOU_THRESHOLD = 0.4
+_DEFAULT_CACHE_PATH = MODEL_CACHE_DIR / "face_detector.onnx"
 
 
 def _download_if_missing(url: str, path: pathlib.Path) -> None:

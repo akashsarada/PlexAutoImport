@@ -8,7 +8,7 @@ using cosine distance, and returns the best-matching identity name (or None).
 Targets legacy NAS x86 CPU via onnxruntime — no torch dependency.
 """
 
-import os
+import logging
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -17,15 +17,16 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-_MODEL_URL = (
-    "https://github.com/deepinsight/insightface/raw/master"
-    "/model_zoo/models/buffalo_sc/w600k_mbf.onnx"
+from constants import (
+    FACE_IDENTIFIER_INPUT_SIZE as _INPUT_SIZE,
+    FACE_IDENTIFIER_MODEL_URL as _MODEL_URL,
+    IMAGE_EXTENSIONS as _SUPPORTED_EXTENSIONS,
+    MODEL_CACHE_DIR as _CACHE_DIR,
 )
-_CACHE_DIR = Path.home() / ".cache" / "aisorter"
+
 _MODEL_FILENAME = "face_identifier.onnx"
-_INPUT_SIZE = (112, 112)
-_EMBEDDING_DIM = 128
-_SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+logger = logging.getLogger(__name__)
 
 
 def _download_if_missing(model_path: Path) -> None:
@@ -33,9 +34,9 @@ def _download_if_missing(model_path: Path) -> None:
     if model_path.exists():
         return
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[face_identifier] Downloading MobileFaceNet ONNX → {model_path}")
+    logger.info("Downloading MobileFaceNet ONNX -> %s", model_path)
     urllib.request.urlretrieve(_MODEL_URL, model_path)
-    print("[face_identifier] Download complete.")
+    logger.info("Download complete.")
 
 
 class FaceIdentifier:

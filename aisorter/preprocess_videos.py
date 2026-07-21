@@ -1,17 +1,15 @@
+"""Extract representative frames from videos for classification and training."""
+
+import argparse
 import os
+
 import cv2
-import shutil
 
-VIDEO_EXTENSIONS = ('.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v')
-IMAGE_EXTENSIONS = ('.jpg', '.png', '.jpeg', '.gif', '.heic', '.dng')
-DURATION_THRESHOLD = 6
+from constants import DURATION_THRESHOLD_SECONDS, VIDEO_EXTENSIONS
 
-def extract_frames_from_video(video_path, output_dir, base_name):
-    """
-    Extracts frames from a video:
-    - If video length < 6 seconds: extract frames at 10%, 40%, 70% of duration.
-    - If video length >= 6 seconds: extract a frame every 2 seconds.
-    """
+
+def extract_frames_from_video(video_path: str, output_dir: str, base_name: str) -> list[str]:
+    """Extract frames: 3 spread frames for short clips, one every 2 seconds otherwise."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"Error: Could not open video {video_path}")
@@ -19,7 +17,7 @@ def extract_frames_from_video(video_path, output_dir, base_name):
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
+
     if fps <= 0 or total_frames <= 0:
         cap.release()
         return []
@@ -27,12 +25,9 @@ def extract_frames_from_video(video_path, output_dir, base_name):
     duration_seconds = total_frames / fps
     frame_indices = []
 
-    if duration_seconds < DURATION_THRESHOLD:
-        percentages = [0.10, 0.40, 0.70]
-        for p in percentages:
-            idx = int(total_frames * p)
-            # Ensure index is within range
-            idx = min(max(0, idx), total_frames - 1)
+    if duration_seconds < DURATION_THRESHOLD_SECONDS:
+        for p in (0.10, 0.40, 0.70):
+            idx = min(max(0, int(total_frames * p)), total_frames - 1)
             frame_indices.append(idx)
     else:
         step_frames = int(2 * fps)
@@ -46,19 +41,16 @@ def extract_frames_from_video(video_path, output_dir, base_name):
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if ret:
-            out_filename = f"{base_name}_frame_{count+1}.jpg"
-            out_path = os.path.join(output_dir, out_filename)
+            out_path = os.path.join(output_dir, f"{base_name}_frame_{count + 1}.jpg")
             cv2.imwrite(out_path, frame)
             saved_files.append(out_path)
-    
+
     cap.release()
     return saved_files
 
-def preprocess_labeled_folder(labeled_dir):
-    """
-    Scans the labeled directory. For any class subfolder (e.g., Cars, People, etc.),
-    it extracts frames from any video file and saves them as images, then deletes/moves the original video.
-    """
+
+def preprocess_labeled_folder(labeled_dir: str) -> None:
+    """Extract frames from every video under each class subfolder of *labeled_dir*."""
     if not os.path.exists(labeled_dir):
         print(f"Error: '{labeled_dir}' directory does not exist.")
         return
@@ -67,32 +59,31 @@ def preprocess_labeled_folder(labeled_dir):
     video_count = 0
     extracted_count = 0
 
-    for root, dirs, files in os.walk(labeled_dir):
+    for root, _, files in os.walk(labeled_dir):
         for file in files:
-            if file.lower().endswith(VIDEO_EXTENSIONS):
-                video_path = os.path.join(root, file)
-                base_name = os.path.splitext(file)[0]
-                
-                print(f"Processing video: {video_path}")
-                # Check if frames already exist for this video
-                first_frame_path = os.path.join(root, f"{base_name}_frame_1.jpg")
-                if os.path.exists(first_frame_path):
-                    print(f"  Frames already extracted for {file}, skipping.")
-                    video_count += 1
-                    continue
+            if not file.lower().endswith(VIDEO_EXTENSIONS):
+                continue
+            video_path = os.path.join(root, file)
+            base_name = os.path.splitext(file)[0]
+            video_count += 1
 
-                saved_frames = extract_frames_from_video(video_path, root, base_name)
-                
-                if saved_frames:
-                    print(f"  Extracted {len(saved_frames)} frames.")
-                    extracted_count += len(saved_frames)
-                else:
-                    print(f"  Failed to extract any frames from {file}")
-                
-                video_count += 1
+            print(f"Processing video: {video_path}")
+            if os.path.exists(os.path.join(root, f"{base_name}_frame_1.jpg")):
+                print(f"  Frames already extracted for {file}, skipping.")
+                continue
+
+            saved_frames = extract_frames_from_video(video_path, root, base_name)
+            if saved_frames:
+                print(f"  Extracted {len(saved_frames)} frames.")
+                extracted_count += len(saved_frames)
+            else:
+                print(f"  Failed to extract any frames from {file}")
 
     print(f"Preprocessing completed. Processed {video_count} videos, extracted {extracted_count} frames.")
 
-if __name__ == '__main__':
-    # This can be run stand-alone to preprocess dataset/labeled folder
-    preprocess_labeled_folder('labeled')
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Extract frames from videos in a labeled dataset folder.")
+    parser.add_argument("labeled_dir", nargs="?", default="labeled", help="Labeled dataset root (default: labeled)")
+    args = parser.parse_args()
+    preprocess_labeled_folder(args.labeled_dir)

@@ -9,13 +9,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from DSC import CategorySorter
-from MobileNetV3_Mini import MobileNetV3Mini
-from MobileNetV3_Small import MobileNetV3Small
-from small_CNN import CustomCNN
-from dataset import MultiLabelPhotoDataset, build_transforms
+from aisorter.dataset import MultiLabelPhotoDataset, build_transforms
+from aisorter.models.DSC import CategorySorter
+from aisorter.models.MobileNetV3_Mini import MobileNetV3Mini
+from aisorter.models.MobileNetV3_Small import MobileNetV3Small
+from aisorter.models.small_CNN import CustomCNN
+from constants import TRAINING_IMAGE_SIZE
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,7 +96,7 @@ def save_checkpoint(model: nn.Module, path: str, class_names: list[str], model_t
             "model_state_dict": model.state_dict(),
             "class_names": class_names,
             "num_classes": len(class_names),
-            "img_size": 128,
+            "img_size": TRAINING_IMAGE_SIZE,
             "model_type": model_type,
         },
         path,
@@ -196,7 +195,7 @@ def main() -> None:
     best_val_acc = [0.0] * num_classes
     best_val_epoch = 0
     best_checkpoint_path = os.path.join(args.output_dir, "best_model.pth")
-    history: dict = {"timestamp": [] ,"train_loss": [], "val_loss": [], "val_accuracy_per_class": []}
+    history: dict = {"timestamp": [], "train_loss": [], "val_loss": [], "val_accuracy_per_class": []}
 
     def _save_and_exit(signum, frame) -> None:
         print("\nInterrupted — saving current model …")

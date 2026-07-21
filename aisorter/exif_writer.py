@@ -1,46 +1,43 @@
+"""Read and write EXIF/XMP keyword tags on images and videos via PyExifTool."""
+
 import os
+
 from exiftool import ExifToolHelper
-from aisorter.preprocess_videos import VIDEO_EXTENSIONS
+
+from constants import VIDEO_EXTENSIONS
+
 
 def write_keywords(image_path: str, keywords: list[str]) -> None:
-    """Write tags to an image or video file using PyExifTool."""
+    """Write keyword tags to an image or video file."""
     ext = os.path.splitext(image_path)[1].lower()
 
-    # Define appropriate tags for the file type
     if ext in VIDEO_EXTENSIONS:
         tags = {
             "XMP:Subject": keywords,
             "Keys:Keywords": keywords,
-            "ItemList:Keyword": keywords
+            "ItemList:Keyword": keywords,
         }
     else:
         tags = {
             "EXIF:Keywords": keywords,
-            "XMP:Subject": keywords
+            "XMP:Subject": keywords,
         }
 
     with ExifToolHelper() as et:
-        et.set_tags(
-            image_path,
-            tags=tags,
-            params=["-overwrite_original", "-P"]  # Prevents creating file backups on your NAS and preserves file modification date
-        )
-
-# Maintain the exact alias requested by the user
-write_tags_to_file = write_keywords
+        # -overwrite_original avoids backup copies on the NAS; -P preserves the modification date
+        et.set_tags(image_path, tags=tags, params=["-overwrite_original", "-P"])
 
 
 def read_keywords(image_path: str) -> list[str]:
-    """Read EXIF and XMP tags from an image or video file using PyExifTool."""
+    """Read keyword tags from any of the standard EXIF/XMP locations."""
     with ExifToolHelper() as et:
         tags = et.get_tags(image_path, ["EXIF:Keywords", "XMP:Subject", "Keys:Keywords", "ItemList:Keyword"])[0]
-        # Get keywords from any of the standard locations
         keywords = (
-            tags.get("EXIF:Keywords") or
-            tags.get("XMP:Subject") or
-            tags.get("Keys:Keywords") or
-            tags.get("ItemList:Keyword") or
-            []
+            tags.get("EXIF:Keywords")
+            or tags.get("XMP:Subject")
+            or tags.get("Keys:Keywords")
+            or tags.get("ItemList:Keyword")
+            or []
         )
         if isinstance(keywords, str):
             return [keywords]
@@ -48,16 +45,12 @@ def read_keywords(image_path: str) -> list[str]:
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        print("Usage: python3 exif_writer.py <image_or_video_path>")
-        sys.exit(1)
+    import argparse
 
-    path = sys.argv[1].removeprefix("[").removesuffix("]")
-    if not os.path.exists(path):
-        print(f"File not found: {path}")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Print keyword tags for a media file.")
+    parser.add_argument("path", help="Image or video file to read")
+    args = parser.parse_args()
 
-    print(f"Reading keywords from: {path}")
-    keywords = read_keywords(path)
-    print(f"Keywords: {keywords}")
+    if not os.path.exists(args.path):
+        raise SystemExit(f"File not found: {args.path}")
+    print(f"Keywords: {read_keywords(args.path)}")

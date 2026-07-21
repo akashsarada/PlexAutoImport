@@ -15,6 +15,7 @@ opencv-python-headless==4.10.0.84
 PyExifTool>=0.5.6
 numpy==1.26.4
 Pillow==10.4.0
+pillow-heif==0.18.0
 requests==2.32.3
 tqdm==4.66.4
 onnx==1.22.0
