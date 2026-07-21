@@ -16,7 +16,7 @@ import numpy as np
 import onnxruntime as ort
 from tqdm import tqdm
 
-from runtime_output import is_verbose
+from helpers.runtime_output import is_verbose
 from constants import (
     FACE_DETECTOR_INPUT_HEIGHT as _INPUT_H,
     FACE_DETECTOR_INPUT_WIDTH as _INPUT_W,

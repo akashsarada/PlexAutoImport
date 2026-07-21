@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import call, patch
 
-from moving import move_file, robust_move
+from helpers.moving import move_file, robust_move
 
 
 class MovingTest(unittest.TestCase):

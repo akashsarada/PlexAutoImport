@@ -6,7 +6,7 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-from runtime_output import configure_logging, progress
+from helpers.runtime_output import configure_logging, progress
 
 
 class RuntimeOutputTest(unittest.TestCase):

@@ -14,10 +14,10 @@ from typing import Callable, Optional
 from aisorter.exif_writer import write_keywords
 from aisorter.pipeline import AISorterPipeline
 from aisorter.preprocess_videos import extract_frames_from_video
-from runtime_output import configure_logging, progress
+from helpers.runtime_output import configure_logging, progress
 from constants import DEFAULT_EVENT_THRESHOLD, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from events import group_events
-from moving import move_file
+from helpers.moving import move_file
 
 logger = logging.getLogger(__name__)
 

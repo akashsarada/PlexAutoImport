@@ -8,7 +8,7 @@ from collections import defaultdict
 from typing import Callable, Optional
 
 from constants import DEFAULT_EVENT_THRESHOLD
-from moving import move_file
+from helpers.moving import move_file
 
 logger = logging.getLogger(__name__)
 
