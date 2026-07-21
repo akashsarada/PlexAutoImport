@@ -54,14 +54,22 @@ class AISorterPipeline:
         self,
         reference_dir: Optional[str] = None,
         category_model_path: Optional[str] = None,
+        face_detector_model_path: Optional[str] = None,
+        face_identifier_model_path: Optional[str] = None,
         face_confidence: float = 0.7,
         identity_threshold: float = 0.4,
     ) -> None:
-        self._face_detector = FaceDetector(confidence_threshold=face_confidence)
+        self._face_detector = FaceDetector(
+            confidence_threshold=face_confidence,
+            model_path=face_detector_model_path,
+        )
 
         self._face_identifier: Optional[FaceIdentifier] = None
         if reference_dir is not None:
-            self._face_identifier = FaceIdentifier(distance_threshold=identity_threshold)
+            self._face_identifier = FaceIdentifier(
+                model_path=face_identifier_model_path,
+                distance_threshold=identity_threshold,
+            )
             self._face_identifier.load_references(reference_dir)
 
         model_path = Path(category_model_path) if category_model_path else _DEFAULT_MODEL_PATH
@@ -82,15 +90,50 @@ class AISorterPipeline:
         logits = self._category_session.run(None, {self._category_input_name: blob})[0]
         probs = _sigmoid(logits[0])
         categories = [CATEGORY_LABELS[i] for i, p in enumerate(probs) if p >= CATEGORY_THRESHOLD]
+        logger.info(
+            "Stage 1/4 category classification complete for %s: categories=%s",
+            image_path,
+            categories,
+        )
 
         face_boxes = []
         identities: list[str] = []
         if any(c.lower() == "people" for c in categories):
             face_boxes = self._face_detector.detect(bgr)
+            logger.info(
+                "Stage 2/4 face detection complete for %s: faces=%d",
+                image_path,
+                len(face_boxes),
+            )
             identities = self._identify_faces(bgr, face_boxes)
+            if self._face_identifier is None:
+                logger.info(
+                    "Stage 3/4 face identification skipped for %s: identifier not configured",
+                    image_path,
+                )
+            else:
+                logger.info(
+                    "Stage 3/4 face identification complete for %s: identities=%s",
+                    image_path,
+                    identities,
+                )
+        else:
+            logger.info(
+                "Stage 2/4 face detection skipped for %s: people category not detected",
+                image_path,
+            )
+            logger.info(
+                "Stage 3/4 face identification skipped for %s: face detection not run",
+                image_path,
+            )
 
         labels = list(identities) + [c for c in categories if c not in identities]
         write_keywords(image_path, labels)
+        logger.info(
+            "Stage 4/4 keyword write complete for %s: labels=%s",
+            image_path,
+            labels,
+        )
 
         return {
             "image": image_path,

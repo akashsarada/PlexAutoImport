@@ -13,6 +13,7 @@ from constants.inference import (
     TRAINING_IMAGE_SIZE,
 )
 from constants.media import (
+    DEFAULT_EVENT_THRESHOLD,
     DURATION_THRESHOLD_SECONDS,
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,

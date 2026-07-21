@@ -6,15 +6,17 @@ Input resolution: 320 × 240 pixels.
 Weight source: https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB
 """
 
+import logging
 import pathlib
+import urllib.request
 from typing import Optional
 
 import cv2
 import numpy as np
 import onnxruntime as ort
-import requests
 from tqdm import tqdm
 
+from runtime_output import is_verbose
 from constants import (
     FACE_DETECTOR_INPUT_HEIGHT as _INPUT_H,
     FACE_DETECTOR_INPUT_WIDTH as _INPUT_W,
@@ -25,25 +27,38 @@ from constants import (
 
 _DEFAULT_CACHE_PATH = MODEL_CACHE_DIR / "face_detector.onnx"
 
+logger = logging.getLogger(__name__)
+
 
 def _download_if_missing(url: str, path: pathlib.Path) -> None:
-    """Download *url* to *path* with a tqdm progress bar if the file is absent."""
+    """Download *url* to *path* with progress unless verbose logging is enabled."""
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    response = requests.get(url, stream=True, timeout=60)
-    response.raise_for_status()
-    total = int(response.headers.get("content-length", 0))
-    with open(path, "wb") as f, tqdm(
-        desc=path.name,
-        total=total,
-        unit="B",
-        unit_scale=True,
-        unit_divisor=1024,
-    ) as bar:
-        for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
-            bar.update(len(chunk))
+    partial_path = path.with_suffix(f"{path.suffix}.part")
+    logger.info("Downloading face detector model -> %s", path)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response, open(partial_path, "wb") as output:
+            total = int(response.headers.get("content-length", 0))
+            with tqdm(
+                desc=path.name,
+                total=total,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                disable=is_verbose(),
+            ) as bar:
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    bar.update(len(chunk))
+        partial_path.replace(path)
+        logger.info("Face detector model download complete")
+    except Exception:
+        partial_path.unlink(missing_ok=True)
+        raise
 
 
 def _iou(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
