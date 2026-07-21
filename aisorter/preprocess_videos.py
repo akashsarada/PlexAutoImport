@@ -3,12 +3,14 @@ import cv2
 import shutil
 
 VIDEO_EXTENSIONS = ('.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm', '.m4v')
+IMAGE_EXTENSIONS = ('.jpg', '.png', '.jpeg', '.gif', '.heic', '.dng')
+DURATION_THRESHOLD = 6
 
 def extract_frames_from_video(video_path, output_dir, base_name):
     """
     Extracts frames from a video:
-    - If video length < 60 seconds: extract frames at 30%, 60%, 90% of duration.
-    - If video length >= 60 seconds: extract a frame every 30 seconds.
+    - If video length < 6 seconds: extract frames at 10%, 40%, 70% of duration.
+    - If video length >= 6 seconds: extract a frame every 2 seconds.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -25,18 +27,16 @@ def extract_frames_from_video(video_path, output_dir, base_name):
     duration_seconds = total_frames / fps
     frame_indices = []
 
-    if duration_seconds < 30.0:
-        # For videos less than a minute, get frames at 30%, 60%, and 90%
-        percentages = [0.30, 0.60, 0.90]
+    if duration_seconds < DURATION_THRESHOLD:
+        percentages = [0.10, 0.40, 0.70]
         for p in percentages:
             idx = int(total_frames * p)
             # Ensure index is within range
             idx = min(max(0, idx), total_frames - 1)
             frame_indices.append(idx)
     else:
-        # For videos >= 60 seconds, extract a frame every 30 seconds
-        step_frames = int(10 * fps)
-        current_frame = step_frames
+        step_frames = int(2 * fps)
+        current_frame = int(0.75 * fps)
         while current_frame < total_frames:
             frame_indices.append(current_frame)
             current_frame += step_frames

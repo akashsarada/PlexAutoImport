@@ -53,6 +53,8 @@ def export(model_path: str, output_path: str, opset: int) -> str:
         model,
         dummy,
         output_path,
+        do_constant_folding=True,
+        keep_initializers_as_inputs=False,
         opset_version=opset,
         input_names=["input"],
         output_names=["output"],

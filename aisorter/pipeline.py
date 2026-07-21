@@ -18,7 +18,11 @@ from typing import Optional
 import cv2
 import numpy as np
 import onnxruntime as ort
+from PIL import Image
 from tqdm import tqdm
+import pillow_heif
+pillow_heif.register_heif_opener()
+ort.set_default_logger_severity(3)
 
 sys.path.insert(0, str(Path(__file__).parent / "models"))
 from face_detector import FaceDetector
@@ -47,6 +51,7 @@ class AISorterPipeline:
 
     def __init__(
         self,
+        output_root: Optional[str] = None,
         reference_dir: Optional[str] = None,
         category_model_path: Optional[str] = None,
         face_confidence: float = 0.7,
@@ -68,12 +73,18 @@ class AISorterPipeline:
 
     def process_image(self, image_path: str) -> dict:
         """Run all stages on a single image and route it to its destination."""
-        bgr = cv2.imread(image_path)
-        if bgr is None:
-            raise ValueError(f"Could not read image: {image_path}")
+        try:
+            with Image.open(image_path) as pil_img:
+                rgb = np.array(pil_img.convert("RGB"))
+                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            # Fallback to cv2
+            bgr = cv2.imread(image_path)
+            if bgr is None:
+                raise ValueError(f"Could not read image {image_path}: {e}")
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
         # Stage 1: Category classification via ONNX
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         resized = cv2.resize(rgb, _CATEGORY_INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
         normalized = (resized.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
         blob = np.expand_dims(normalized.transpose(2, 0, 1), axis=0)
@@ -132,7 +143,7 @@ class AISorterPipeline:
                 warnings.warn(f"Skipping {path}: {exc}", stacklevel=2)
                 logger.warning("Skipping %s: %s", path, exc)
 
-        return results
+        return results        
 
 
 def main() -> None:
