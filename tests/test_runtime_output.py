@@ -42,7 +42,7 @@ class RuntimeOutputTest(unittest.TestCase):
         self.assertIn("verbose message", self.log_file.read_text(encoding="utf-8"))
         self.assertIn("INFO verbose message", terminal.getvalue())
 
-    @patch("runtime_output.tqdm")
+    @patch("helpers.runtime_output.tqdm")
     def test_progress_bar_is_enabled_only_in_quiet_mode(self, tqdm_mock) -> None:
         items = ["one", "two"]
         tqdm_mock.return_value = items

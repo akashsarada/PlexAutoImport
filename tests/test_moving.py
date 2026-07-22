@@ -14,7 +14,7 @@ class MovingTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    @patch("moving.time.sleep")
+    @patch("helpers.moving.time.sleep")
     def test_move_file_copies_content_and_removes_source(self, _sleep) -> None:
         source = self.root / "source.jpg"
         destination = self.root / "destination.jpg"
@@ -32,7 +32,7 @@ class MovingTest(unittest.TestCase):
         source.write_text("source", encoding="utf-8")
         destination.write_text("destination", encoding="utf-8")
 
-        with self.assertLogs("moving", level="WARNING") as logs:
+        with self.assertLogs("helpers.moving", level="WARNING") as logs:
             moved = move_file(str(source), str(destination))
 
         self.assertFalse(moved)
@@ -40,9 +40,9 @@ class MovingTest(unittest.TestCase):
         self.assertTrue(source.exists())
         self.assertEqual(destination.read_text(encoding="utf-8"), "destination")
 
-    @patch("moving.os.remove", side_effect=[PermissionError, None])
-    @patch("moving.shutil.copy2")
-    @patch("moving.time.sleep")
+    @patch("helpers.moving.os.remove", side_effect=[PermissionError, None])
+    @patch("helpers.moving.shutil.copy2")
+    @patch("helpers.moving.time.sleep")
     def test_robust_move_retries_source_removal(
         self,
         sleep,
