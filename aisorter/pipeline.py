@@ -144,6 +144,15 @@ class AISorterPipeline:
         }
 
     def _load_image(self, image_path: str) -> tuple[np.ndarray, np.ndarray]:
+        if image_path.lower().endswith(".dng"):
+            try:
+                import rawpy
+                with rawpy.imread(image_path) as raw:
+                    rgb = raw.postprocess()
+                return rgb, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            except Exception as raw_err:
+                logger.warning("Failed to load DNG using rawpy: %s. Falling back to default loader.", raw_err)
+
         try:
             with Image.open(image_path) as pil_img:
                 rgb = np.array(pil_img.convert("RGB"))

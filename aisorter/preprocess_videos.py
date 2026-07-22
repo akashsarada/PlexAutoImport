@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 def extract_frames_from_video(video_path: str, output_dir: str, base_name: str) -> list[str]:
     """Extract frames: 3 spread frames for short clips, one every 2 seconds otherwise."""
+    logger.info("Starting frame extraction for %s", video_path)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         logger.error("Could not open video %s", video_path)
@@ -50,6 +51,7 @@ def extract_frames_from_video(video_path: str, output_dir: str, base_name: str) 
             saved_files.append(out_path)
 
     cap.release()
+    logger.info("Finished frame extraction for %s: extracted %d frames", video_path, len(saved_files))
     return saved_files
 
 

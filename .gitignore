@@ -6,6 +6,7 @@ __pycache__
 .antigravitycli
 .agents
 .kiro
+error.txt
 
 # personal importer wrappers (copies of run.bat with filled-in paths)
 *Importer.bat

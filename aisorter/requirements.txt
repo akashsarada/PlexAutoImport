@@ -17,6 +17,7 @@ numpy==1.26.4
 Pillow==10.4.0
 pillow-heif==0.18.0
 tqdm==4.66.4
+rawpy>=0.23.0
 onnx==1.22.0
 
 # --- Train-only dependencies (not required on the NAS) ---
