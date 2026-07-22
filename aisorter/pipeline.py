@@ -31,6 +31,7 @@ from constants import (
     IMAGE_EXTENSIONS,
     IMAGENET_MEAN,
     IMAGENET_STD,
+    MAX_WORKING_RESOLUTION,
 )
 
 pillow_heif.register_heif_opener()
@@ -45,6 +46,16 @@ logger = logging.getLogger(__name__)
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-x))
+
+
+def _cap_resolution(image: np.ndarray) -> np.ndarray:
+    """Downscale *image* so its long edge is at most MAX_WORKING_RESOLUTION."""
+    long_edge = max(image.shape[:2])
+    if long_edge <= MAX_WORKING_RESOLUTION:
+        return image
+    scale = MAX_WORKING_RESOLUTION / long_edge
+    new_size = (round(image.shape[1] * scale), round(image.shape[0] * scale))
+    return cv2.resize(image, new_size, interpolation=cv2.INTER_AREA)
 
 
 class AISorterPipeline:
@@ -81,10 +92,11 @@ class AISorterPipeline:
 
     def process_image(self, image_path: str) -> dict:
         """Run all stages on a single image; returns categories, identities, and labels written."""
-        rgb, bgr = self._load_image(image_path)
+        bgr = self._load_image(image_path)
 
-        resized = cv2.resize(rgb, CATEGORY_INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
-        normalized = (resized.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
+        resized = cv2.resize(bgr, CATEGORY_INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        normalized = (rgb.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
         blob = np.expand_dims(normalized.transpose(2, 0, 1), axis=0)
 
         logits = self._category_session.run(None, {self._category_input_name: blob})[0]
@@ -143,25 +155,27 @@ class AISorterPipeline:
             "labels": labels,
         }
 
-    def _load_image(self, image_path: str) -> tuple[np.ndarray, np.ndarray]:
+    def _load_image(self, image_path: str) -> np.ndarray:
+        """Load *image_path* as BGR, capped to MAX_WORKING_RESOLUTION on the long edge."""
         if image_path.lower().endswith(".dng"):
             try:
                 import rawpy
                 with rawpy.imread(image_path) as raw:
-                    rgb = raw.postprocess()
-                return rgb, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                    rgb = raw.postprocess(half_size=True)
+                return cv2.cvtColor(_cap_resolution(rgb), cv2.COLOR_RGB2BGR)
             except Exception as raw_err:
                 logger.warning("Failed to load DNG using rawpy: %s. Falling back to default loader.", raw_err)
 
         try:
             with Image.open(image_path) as pil_img:
-                rgb = np.array(pil_img.convert("RGB"))
-                return rgb, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                pil_img.draft("RGB", (MAX_WORKING_RESOLUTION, MAX_WORKING_RESOLUTION))
+                rgb = _cap_resolution(np.array(pil_img.convert("RGB")))
+            return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         except Exception as e:
             bgr = cv2.imread(image_path)
             if bgr is None:
                 raise ValueError(f"Could not read image {image_path}: {e}") from e
-            return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), bgr
+            return _cap_resolution(bgr)
 
     def _identify_faces(self, bgr: np.ndarray, face_boxes: list[dict]) -> list[str]:
         if not face_boxes or self._face_identifier is None:

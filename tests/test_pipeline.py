@@ -14,7 +14,7 @@ class PipelineLoggingTest(unittest.TestCase):
         self.pipeline._face_detector = Mock()
         self.pipeline._face_identifier = Mock()
         image = np.zeros((8, 8, 3), dtype=np.uint8)
-        self.pipeline._load_image = Mock(return_value=(image, image))
+        self.pipeline._load_image = Mock(return_value=image)
 
     @patch("aisorter.pipeline.write_keywords")
     def test_logs_completion_after_all_executed_stages(self, write_keywords) -> None:

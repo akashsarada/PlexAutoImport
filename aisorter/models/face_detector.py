@@ -156,10 +156,10 @@ class FaceDetector:
 
     def _preprocess(self, bgr: np.ndarray) -> np.ndarray:
         """BGR uint8 → normalised float32 blob [1, 3, 240, 320]."""
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        resized = cv2.resize(rgb, (_INPUT_W, _INPUT_H), interpolation=cv2.INTER_LINEAR)
+        resized = cv2.resize(bgr, (_INPUT_W, _INPUT_H), interpolation=cv2.INTER_LINEAR)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         # Normalise to [-1, 1]
-        blob = (resized.astype(np.float32) - 127.0) / 128.0
+        blob = (rgb.astype(np.float32) - 127.0) / 128.0
         blob = blob.transpose(2, 0, 1)   # HWC → CHW
         blob = np.expand_dims(blob, 0)   # → [1, 3, H, W]
         return blob

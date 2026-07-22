@@ -9,6 +9,7 @@ from constants.inference import (
     IMAGENET_MEAN,
     IMAGENET_STD,
     LABEL_KEYWORDS,
+    MAX_WORKING_RESOLUTION,
     MULTILABEL_MODEL_TYPES,
     TRAINING_IMAGE_SIZE,
 )
