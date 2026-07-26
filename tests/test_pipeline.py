@@ -30,9 +30,9 @@ class PipelineLoggingTest(unittest.TestCase):
             result = self.pipeline.process_image("photo.jpg")
 
         output = "\n".join(logs.output)
-        self.assertIn("Stage 1/4 category classification complete", output)
-        self.assertIn("Stage 2/4 face detection complete", output)
-        self.assertIn("Stage 3/4 face identification complete", output)
+        self.assertIn("Stage 1/4 face detection complete", output)
+        self.assertIn("Stage 2/4 face identification complete", output)
+        self.assertIn("Stage 3/4 category classification complete", output)
         self.assertIn("Stage 4/4 keyword write complete", output)
         self.assertEqual(result["identities"], ["Alice"])
         write_keywords.assert_called_once_with("photo.jpg", ["Alice", "cars", "people"])
@@ -42,17 +42,17 @@ class PipelineLoggingTest(unittest.TestCase):
         self.pipeline._category_session.run.return_value = [
             np.array([[-10.0, -10.0, 10.0]], dtype=np.float32)
         ]
+        self.pipeline._face_detector.detect.return_value = []
+        self.pipeline._face_identifier = None
 
         with self.assertLogs("aisorter.pipeline", level="INFO") as logs:
             self.pipeline.process_image("scenery.jpg")
 
         output = "\n".join(logs.output)
-        self.assertIn("Stage 1/4 category classification complete", output)
-        self.assertIn("Stage 2/4 face detection skipped", output)
-        self.assertIn("Stage 3/4 face identification skipped", output)
+        self.assertIn("Stage 1/4 face detection complete", output)
+        self.assertIn("Stage 2/4 face identification skipped", output)
+        self.assertIn("Stage 3/4 category classification complete", output)
         self.assertIn("Stage 4/4 keyword write complete", output)
-        self.pipeline._face_detector.detect.assert_not_called()
-        self.pipeline._face_identifier.identify.assert_not_called()
 
 
 if __name__ == "__main__":

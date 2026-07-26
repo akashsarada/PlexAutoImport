@@ -1,6 +1,11 @@
 """Read and write EXIF/XMP keyword tags on images and videos via PyExifTool."""
 
 import os
+import sys
+
+# Ensure parent directory is in sys.path when run as a script directly
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from exiftool import ExifToolHelper
 
@@ -9,6 +14,9 @@ from constants import VIDEO_EXTENSIONS
 
 def write_keywords(image_path: str, keywords: list[str]) -> None:
     """Write keyword tags to an image or video file."""
+    if not keywords:
+        return
+
     ext = os.path.splitext(image_path)[1].lower()
 
     if ext in VIDEO_EXTENSIONS:
@@ -23,9 +31,14 @@ def write_keywords(image_path: str, keywords: list[str]) -> None:
             "XMP:Subject": keywords,
         }
 
-    with ExifToolHelper() as et:
-        # -overwrite_original avoids backup copies on the NAS; -P preserves the modification date
-        et.set_tags(image_path, tags=tags, params=["-overwrite_original", "-P"])
+    try:
+        with ExifToolHelper() as et:
+            # -overwrite_original avoids backup copies on the NAS; -P preserves the modification date
+            et.set_tags(image_path, tags=tags, params=["-overwrite_original", "-P"])
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("Failed to write keywords %s to %s: %s", keywords, image_path, e)
 
 
 def read_keywords(image_path: str) -> list[str]:

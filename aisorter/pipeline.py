@@ -99,45 +99,35 @@ class AISorterPipeline:
         normalized = (rgb.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
         blob = np.expand_dims(normalized.transpose(2, 0, 1), axis=0)
 
+        face_boxes = []
+        identities: list[str] = []
+        face_boxes = self._face_detector.detect(bgr)
+        logger.info(
+            "Stage 1/4 face detection complete for %s: faces=%d",
+            image_path,
+            len(face_boxes),
+        )
+        identities = self._identify_faces(bgr, face_boxes, image_path)
+        if self._face_identifier is None:
+            logger.info(
+                "Stage 2/4 face identification skipped for %s: identifier not configured",
+                image_path,
+            )
+        else:
+            logger.info(
+                "Stage 2/4 face identification complete for %s: identities=%s",
+                image_path,
+                identities,
+            )
+
         logits = self._category_session.run(None, {self._category_input_name: blob})[0]
         probs = _sigmoid(logits[0])
         categories = [CATEGORY_LABELS[i] for i, p in enumerate(probs) if p >= CATEGORY_THRESHOLD]
         logger.info(
-            "Stage 1/4 category classification complete for %s: categories=%s",
+            "Stage 3/4 category classification complete for %s: categories=%s",
             image_path,
             categories,
         )
-
-        face_boxes = []
-        identities: list[str] = []
-        if any(c.lower() == "people" for c in categories):
-            face_boxes = self._face_detector.detect(bgr)
-            logger.info(
-                "Stage 2/4 face detection complete for %s: faces=%d",
-                image_path,
-                len(face_boxes),
-            )
-            identities = self._identify_faces(bgr, face_boxes)
-            if self._face_identifier is None:
-                logger.info(
-                    "Stage 3/4 face identification skipped for %s: identifier not configured",
-                    image_path,
-                )
-            else:
-                logger.info(
-                    "Stage 3/4 face identification complete for %s: identities=%s",
-                    image_path,
-                    identities,
-                )
-        else:
-            logger.info(
-                "Stage 2/4 face detection skipped for %s: people category not detected",
-                image_path,
-            )
-            logger.info(
-                "Stage 3/4 face identification skipped for %s: face detection not run",
-                image_path,
-            )
 
         labels = list(identities) + [c for c in categories if c not in identities]
         write_keywords(image_path, labels)
@@ -177,17 +167,17 @@ class AISorterPipeline:
                 raise ValueError(f"Could not read image {image_path}: {e}") from e
             return _cap_resolution(bgr)
 
-    def _identify_faces(self, bgr: np.ndarray, face_boxes: list[dict]) -> list[str]:
+    def _identify_faces(self, bgr: np.ndarray, face_boxes: list[dict], image_path: str) -> list[str]:
         if not face_boxes or self._face_identifier is None:
             return []
         identities: list[str] = []
-        for face in face_boxes:
+        for i, face in enumerate(face_boxes):
             x1, y1, x2, y2 = (int(v) for v in face["bbox"])
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(bgr.shape[1], x2), min(bgr.shape[0], y2)
             if x2 <= x1 or y2 <= y1:
                 continue
-            name = self._face_identifier.identify(bgr[y1:y2, x1:x2])
+            name = self._face_identifier.identify(bgr[y1:y2, x1:x2], image_path, i)
             if name is not None and name not in identities:
                 identities.append(name)
         return identities

@@ -88,9 +88,12 @@ class FaceIdentifier:
         if not ref_path.is_dir():
             raise ValueError(f"reference_dir does not exist: {reference_dir}")
 
+        self._reference_dir = ref_path
         self._references.clear()
         for person_dir in sorted(ref_path.iterdir()):
             if not person_dir.is_dir():
+                continue
+            if person_dir.name == "unknown":
                 continue
             image_files = [
                 p for p in person_dir.iterdir()
@@ -113,20 +116,26 @@ class FaceIdentifier:
                     mean_vec / norm if norm > 1e-8 else mean_vec
                 )
 
-    def identify(self, face_crop: np.ndarray) -> Optional[str]:
+    def identify(
+        self,
+        face_crop: np.ndarray,
+        source_path: Optional[str] = None,
+        face_index: int = 0,
+    ) -> Optional[str]:
         """Return the best-matching identity name, or None if no match.
 
         Args:
             face_crop: BGR face crop as returned by the face detector.
+            source_path: Path of the source image file containing the face.
+            face_index: Index of the face detected in the source image.
 
         Returns:
-            Person name string when the closest reference is within
-            *distance_threshold*, otherwise None.
+            Person name string when matched, otherwise None.
         """
-        if not self._references:
-            return None
-
+        # Embed the query face
         query = self._embed(face_crop)
+
+        # 1. Match against known references (includes existing folders like unknown_1, unknown_2)
         best_name: Optional[str] = None
         best_dist = float("inf")
 
@@ -136,7 +145,82 @@ class FaceIdentifier:
                 best_dist = dist
                 best_name = name
 
-        return best_name if best_dist <= self._distance_threshold else None
+        if best_dist <= self._distance_threshold:
+            return best_name
+
+        # If reference directory is not set, we cannot do clustering
+        if not hasattr(self, "_reference_dir") or self._reference_dir is None:
+            return None
+
+        # 2. Match against single unrecognized headshots in references/unknown/
+        unknown_dir = self._reference_dir / "unknown"
+        matched_unknown_path: Optional[Path] = None
+        matched_embedding: Optional[np.ndarray] = None
+        best_unknown_dist = float("inf")
+
+        if unknown_dir.is_dir():
+            for img_path in sorted(unknown_dir.iterdir()):
+                if img_path.suffix.lower() in _SUPPORTED_EXTENSIONS:
+                    crop = cv2.imread(str(img_path))
+                    if crop is None:
+                        continue
+                    emb = self._embed(crop)
+                    dist = self._cosine_distance(query, emb)
+                    if dist < best_unknown_dist:
+                        best_unknown_dist = dist
+                        matched_unknown_path = img_path
+                        matched_embedding = emb
+
+        # Generate unique filename for the current face crop
+        if source_path:
+            base = Path(source_path).stem
+            out_filename = f"{base}_face_{face_index}.jpg"
+        else:
+            import uuid
+            out_filename = f"face_{uuid.uuid4().hex[:8]}.jpg"
+
+        # 3. If matched with an existing headshot in unknown/
+        if best_unknown_dist <= self._distance_threshold and matched_unknown_path is not None:
+            # Find the next available unknown_x directory name
+            x = 1
+            while (self._reference_dir / f"unknown_{x}").exists():
+                x += 1
+            new_person_dir = self._reference_dir / f"unknown_{x}"
+            new_person_dir.mkdir(parents=True, exist_ok=True)
+
+            # Move the matched headshot from unknown/ to unknown_x/
+            target_matched_path = new_person_dir / matched_unknown_path.name
+            try:
+                matched_unknown_path.rename(target_matched_path)
+            except Exception as e:
+                logger.error("Failed to move matched headshot %s: %s", matched_unknown_path, e)
+
+            # Save the current face crop to unknown_x/
+            new_face_path = new_person_dir / out_filename
+            cv2.imwrite(str(new_face_path), face_crop)
+
+            # Update our in-memory references lookup table with the mean embedding of both crops
+            if matched_embedding is not None:
+                mean_vec = np.mean(np.stack([query, matched_embedding], axis=0), axis=0)
+                norm = np.linalg.norm(mean_vec)
+                self._references[new_person_dir.name] = (
+                    mean_vec / norm if norm > 1e-8 else mean_vec
+                )
+
+            logger.info(
+                "Created new clustering identity %s: grouped %s and %s",
+                new_person_dir.name,
+                target_matched_path.name,
+                out_filename
+            )
+            return new_person_dir.name
+
+        # 4. If no match anywhere, save the headshot to unknown/
+        unknown_dir.mkdir(parents=True, exist_ok=True)
+        new_face_path = unknown_dir / out_filename
+        cv2.imwrite(str(new_face_path), face_crop)
+        logger.info("Saved unrecognized face to %s", new_face_path)
+        return None
 
     def _embed(self, face_crop: np.ndarray) -> np.ndarray:
         """Preprocess *face_crop* and return an L2-normalised 128-dim vector.
