@@ -69,6 +69,7 @@ class AISorterPipeline:
         face_identifier_model_path: Optional[str] = None,
         face_confidence: float = 0.7,
         identity_threshold: float = 0.4,
+        family_group: str = "Family",
     ) -> None:
         self._face_detector = FaceDetector(
             confidence_threshold=face_confidence,
@@ -76,6 +77,7 @@ class AISorterPipeline:
         )
 
         self._face_identifier: Optional[FaceIdentifier] = None
+        self._family_identities: set[str] = set()
         if reference_dir is not None:
             self._face_identifier = FaceIdentifier(
                 model_path=face_identifier_model_path,
@@ -83,12 +85,32 @@ class AISorterPipeline:
             )
             self._face_identifier.load_references(reference_dir)
 
+            # Collect names of people inside the family_group subfolder
+            family_dir = Path(reference_dir) / family_group
+            if family_dir.is_dir():
+                self._family_identities = {
+                    d.name for d in family_dir.iterdir() if d.is_dir()
+                }
+                logger.info(
+                    "Family group '%s' loaded: %d member(s): %s",
+                    family_group,
+                    len(self._family_identities),
+                    sorted(self._family_identities),
+                )
+
         model_path = Path(category_model_path) if category_model_path else _DEFAULT_MODEL_PATH
         self._category_session = ort.InferenceSession(
             str(model_path),
             providers=["CPUExecutionProvider"],
         )
         self._category_input_name: str = self._category_session.get_inputs()[0].name
+
+    @property
+    def new_people_found(self) -> int:
+        """Number of new unknown_x person clusters discovered this session."""
+        if self._face_identifier is None:
+            return 0
+        return self._face_identifier.new_people_found
 
     def process_image(self, image_path: str) -> dict:
         """Run all stages on a single image; returns categories, identities, and labels written."""
@@ -107,13 +129,13 @@ class AISorterPipeline:
             image_path,
             len(face_boxes),
         )
-        identities = self._identify_faces(bgr, face_boxes, image_path)
         if self._face_identifier is None:
             logger.info(
                 "Stage 2/4 face identification skipped for %s: identifier not configured",
                 image_path,
             )
         else:
+            identities = self._identify_faces(bgr, face_boxes, image_path)
             logger.info(
                 "Stage 2/4 face identification complete for %s: identities=%s",
                 image_path,
@@ -129,7 +151,11 @@ class AISorterPipeline:
             categories,
         )
 
+        is_family_photo = len(set(identities) & self._family_identities) >= 2
+
         labels = list(identities) + [c for c in categories if c not in identities]
+        if is_family_photo and "Family" not in labels:
+            labels.append("Family")
         write_keywords(image_path, labels)
         logger.info(
             "Stage 4/4 keyword write complete for %s: labels=%s",
@@ -143,6 +169,7 @@ class AISorterPipeline:
             "identities": identities,
             "categories": categories,
             "labels": labels,
+            "is_family_photo": is_family_photo,
         }
 
     def _load_image(self, image_path: str) -> np.ndarray:

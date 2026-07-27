@@ -39,6 +39,15 @@ def _download_if_missing(model_path: Path) -> None:
     logger.info("Download complete.")
 
 
+def _is_unknown_dir(name: str) -> bool:
+    """Return True for 'unknown' or 'unknown_<number>' directory names."""
+    if name == "unknown":
+        return True
+    if name.startswith("unknown_") and name[len("unknown_"):].isdigit():
+        return True
+    return False
+
+
 class FaceIdentifier:
     """Identity matcher using MobileFaceNet 128-dim face embeddings.
 
@@ -71,18 +80,38 @@ class FaceIdentifier:
         self._input_name: str = self._session.get_inputs()[0].name
         self._distance_threshold = distance_threshold
         self._references: dict[str, np.ndarray] = {}
+        self._new_people_found: int = 0
+        self._reference_dir: Optional[Path] = None
+
+    @property
+    def new_people_found(self) -> int:
+        """Number of new unknown_x clusters created during this session."""
+        return self._new_people_found
 
     def load_references(self, reference_dir: str) -> None:
         """Build mean-embedding lookup from a directory of per-person folders.
 
-        Expected layout::
+        Supports flat and nested (grouped) layouts::
 
-            reference_dir/
+            reference_dir/          # flat
             ├── Alice/
-            │   ├── photo1.jpg
-            │   └── photo2.jpg
+            │   └── photo1.jpg
             └── Bob/
                 └── photo1.jpg
+
+            reference_dir/          # nested groups
+            ├── Family/
+            │   ├── Alice/
+            │   │   └── photo1.jpg
+            │   └── Bob/
+            │       └── photo1.jpg
+            └── Friends/
+                └── Charlie/
+                    └── photo1.jpg
+
+        The ``unknown/`` directory (and any ``unknown_<n>/`` directories) at
+        the root of *reference_dir* are reserved for clustering and are never
+        loaded as known identities.
         """
         ref_path = Path(reference_dir)
         if not ref_path.is_dir():
@@ -90,31 +119,56 @@ class FaceIdentifier:
 
         self._reference_dir = ref_path
         self._references.clear()
-        for person_dir in sorted(ref_path.iterdir()):
-            if not person_dir.is_dir():
+        self._new_people_found = 0
+
+        self._load_dir(ref_path, depth=0)
+        logger.info(
+            "Loaded %d known identit%s from %s",
+            len(self._references),
+            "y" if len(self._references) == 1 else "ies",
+            reference_dir,
+        )
+
+    def _load_dir(self, directory: Path, depth: int) -> None:
+        """Recursively scan *directory* for person folders containing images.
+
+        Directories whose names are 'unknown' or 'unknown_<n>' are always
+        skipped regardless of depth.
+        """
+        for entry in sorted(directory.iterdir()):
+            if not entry.is_dir():
                 continue
-            if person_dir.name == "unknown":
+
+            # Always skip clustering directories
+            if _is_unknown_dir(entry.name):
                 continue
+
             image_files = [
-                p for p in person_dir.iterdir()
-                if p.suffix.lower() in _SUPPORTED_EXTENSIONS
+                p for p in entry.iterdir()
+                if p.is_file() and p.suffix.lower() in _SUPPORTED_EXTENSIONS
             ]
-            if not image_files:
-                continue
 
-            embeddings: list[np.ndarray] = []
-            for img_path in image_files:
-                crop = cv2.imread(str(img_path))
-                if crop is None:
-                    continue
-                embeddings.append(self._embed(crop))
+            if image_files:
+                # This directory contains images — treat it as a person folder
+                embeddings: list[np.ndarray] = []
+                for img_path in image_files:
+                    crop = cv2.imread(str(img_path))
+                    if crop is None:
+                        continue
+                    embeddings.append(self._embed(crop))
 
-            if embeddings:
-                mean_vec = np.mean(np.stack(embeddings, axis=0), axis=0)
-                norm = np.linalg.norm(mean_vec)
-                self._references[person_dir.name] = (
-                    mean_vec / norm if norm > 1e-8 else mean_vec
-                )
+                if embeddings:
+                    mean_vec = np.mean(np.stack(embeddings, axis=0), axis=0)
+                    norm = np.linalg.norm(mean_vec)
+                    self._references[entry.name] = (
+                        mean_vec / norm if norm > 1e-8 else mean_vec
+                    )
+                    logger.debug("Loaded identity '%s' (%d image(s))", entry.name, len(embeddings))
+            else:
+                # No images at this level — treat as a group folder and recurse
+                has_subdirs = any(e.is_dir() for e in entry.iterdir())
+                if has_subdirs:
+                    self._load_dir(entry, depth=depth + 1)
 
     def identify(
         self,
@@ -207,6 +261,7 @@ class FaceIdentifier:
                     mean_vec / norm if norm > 1e-8 else mean_vec
                 )
 
+            self._new_people_found += 1
             logger.info(
                 "Created new clustering identity %s: grouped %s and %s",
                 new_person_dir.name,

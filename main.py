@@ -31,6 +31,8 @@ class RuntimeConfig:
     references: Optional[str]
     face_identifier_model: Optional[str]
     event_threshold: int = DEFAULT_EVENT_THRESHOLD
+    family_group: str = "Family"
+    family_dest: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,8 @@ class ImportStats:
     videos_sorted: int
     elapsed_seconds: float
     event_files_grouped: int = 0
+    new_people_found: int = 0
+    family_photos_sorted: int = 0
 
     @property
     def total_entities(self) -> int:
@@ -51,9 +55,11 @@ class ImportStats:
         return self.total_entities / self.elapsed_seconds
 
 
-def _tag_video(pipeline: AISorterPipeline, file_path: str, file_name: str) -> None:
+def _tag_video(pipeline: AISorterPipeline, file_path: str, file_name: str) -> dict:
+    """Tag a video with AI keywords; returns a result dict including is_family_photo."""
     all_categories: set[str] = set()
     all_identities: set[str] = set()
+    is_family_photo = False
 
     with tempfile.TemporaryDirectory() as temp_dir:
         base_name = os.path.splitext(file_name)[0]
@@ -63,12 +69,15 @@ def _tag_video(pipeline: AISorterPipeline, file_path: str, file_name: str) -> No
                 res = pipeline.process_image(frame_path)
                 all_categories.update(res["categories"])
                 all_identities.update(res["identities"])
+                if res.get("is_family_photo"):
+                    is_family_photo = True
             except Exception:
                 logger.exception("Failed to process frame %s", frame_path)
 
     labels = list(all_identities) + [c for c in all_categories if c not in all_identities]
     logger.info("Labels for %s: %s", file_name, labels)
     write_keywords(file_path, labels)
+    return {"identities": list(all_identities), "is_family_photo": is_family_photo}
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -102,6 +111,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--log-file",
         default="plex_auto_import.log",
         help="Log file path (default: plex_auto_import.log)",
+    )
+    parser.add_argument(
+        "--family-group",
+        default="Family",
+        help="Name of the references group subfolder treated as family (default: Family)",
+    )
+    parser.add_argument(
+        "--family-dest",
+        default=None,
+        help="Destination folder for photos with 2+ family members (default: <dest>/Family Photos)",
     )
     return parser.parse_args(argv)
 
@@ -203,6 +222,8 @@ def resolve_config(
         references=references,
         face_identifier_model=face_identifier_model,
         event_threshold=args.event_threshold,
+        family_group=args.family_group,
+        family_dest=args.family_dest,
     )
 
 
@@ -212,6 +233,8 @@ def report_stats(stats: ImportStats, verbose: bool) -> None:
         f"Videos sorted: {stats.videos_sorted}",
         f"Total entities: {stats.total_entities}",
         f"Event files grouped: {stats.event_files_grouped}",
+        f"Family photos sorted: {stats.family_photos_sorted}",
+        f"New people found: {stats.new_people_found}",
         f"Elapsed time: {stats.elapsed_seconds:.2f} seconds",
         f"Entities per second: {stats.entities_per_second:.2f}",
     )
@@ -233,7 +256,9 @@ def run_import(config: RuntimeConfig, verbose: bool) -> int:
         category_model_path=config.category_model,
         face_detector_model_path=config.face_detector_model,
         face_identifier_model_path=config.face_identifier_model,
+        family_group=config.family_group,
     )
+    family_dest = config.family_dest or os.path.join(config.dest, "Family Photos")
 
     files = [
         file
@@ -243,31 +268,42 @@ def run_import(config: RuntimeConfig, verbose: bool) -> int:
     error_count = 0
     images_sorted = 0
     videos_sorted = 0
+    family_photos_sorted = 0
     destination_folders: set[str] = set()
     started_at = time.perf_counter()
     for file in progress(files, verbose=verbose, description="Importing media", unit="file"):
         file_path = os.path.join(config.src, file)
         ext = os.path.splitext(file)[1].lower()
         creation_year = datetime.datetime.fromtimestamp(os.path.getmtime(file_path)).year
+        is_family = False
 
         try:
             if ext in IMAGE_EXTENSIONS:
-                pipeline.process_image(file_path)
+                result = pipeline.process_image(file_path)
+                is_family = result.get("is_family_photo", False)
             elif ext in VIDEO_EXTENSIONS:
-                _tag_video(pipeline, file_path, file)
+                result = _tag_video(pipeline, file_path, file)
+                is_family = result.get("is_family_photo", False)
         except Exception:
             error_count += 1
             logger.exception("Failed to process %s; moving it untagged", file)
 
-        dest_folder = os.path.join(config.dest, f"Photos from {creation_year}")
+        if is_family:
+            dest_folder = family_dest
+        else:
+            dest_folder = os.path.join(config.dest, f"Photos from {creation_year}")
         os.makedirs(dest_folder, exist_ok=True)
         moved = move_file(file_path, os.path.join(dest_folder, file))
         if moved and ext in IMAGE_EXTENSIONS:
             images_sorted += 1
             destination_folders.add(dest_folder)
+            if is_family:
+                family_photos_sorted += 1
         elif moved and ext in VIDEO_EXTENSIONS:
             videos_sorted += 1
             destination_folders.add(dest_folder)
+            if is_family:
+                family_photos_sorted += 1
 
     event_files_grouped = 0
     for destination_folder in sorted(destination_folders):
@@ -287,6 +323,8 @@ def run_import(config: RuntimeConfig, verbose: bool) -> int:
         videos_sorted=videos_sorted,
         elapsed_seconds=time.perf_counter() - started_at,
         event_files_grouped=event_files_grouped,
+        new_people_found=pipeline.new_people_found,
+        family_photos_sorted=family_photos_sorted,
     )
     report_stats(stats, verbose)
 
