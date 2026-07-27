@@ -90,6 +90,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--face-detector-model", help="Face detector ONNX model")
     parser.add_argument("--references", help="Directory of per-person reference face folders")
     parser.add_argument("--face-identifier-model", help="Face identifier ONNX model")
+    parser.add_argument("--event", default=True, help="Event sorting for media")
     parser.add_argument(
         "--event-threshold",
         type=int,
@@ -247,7 +248,7 @@ def report_stats(stats: ImportStats, verbose: bool) -> None:
             print(line)
 
 
-def run_import(config: RuntimeConfig, verbose: bool) -> int:
+def run_import(config: RuntimeConfig, verbose: bool, event: bool) -> int:
     os.makedirs(config.dest, exist_ok=True)
     logger.info("Importing media from %s to %s", config.src, config.dest)
 
@@ -306,17 +307,20 @@ def run_import(config: RuntimeConfig, verbose: bool) -> int:
                 family_photos_sorted += 1
 
     event_files_grouped = 0
-    for destination_folder in sorted(destination_folders):
-        logger.info(
-            "Running event sorter for %s with threshold %d",
-            destination_folder,
-            config.event_threshold,
-        )
-        event_files_grouped += group_events(
-            destination_folder,
-            config.event_threshold,
-            move_file,
-        )
+    if event:
+        for destination_folder in sorted(destination_folders):
+            logger.info(
+                "Running event sorter for %s with threshold %d",
+                destination_folder,
+                config.event_threshold,
+            )
+            event_files_grouped += group_events(
+                destination_folder,
+                config.event_threshold,
+                move_file,
+            )
+    else:
+        logger.info("Event sorter skipped.")
 
     stats = ImportStats(
         images_sorted=images_sorted,
@@ -344,7 +348,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.error("%s", error)
         print(f"Error: {error}", file=sys.stderr)
         return 2
-    return run_import(config, args.verbose)
+    return run_import(config, args.verbose, args.event)
 
 
 if __name__ == "__main__":
