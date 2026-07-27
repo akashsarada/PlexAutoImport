@@ -13,7 +13,7 @@ FACE_DETECTOR_INPUT_HEIGHT = 240
 FACE_NMS_IOU_THRESHOLD = 0.4
 
 FACE_IDENTIFIER_MODEL_URL = (
-    "https://github.com/deepinsight/insightface/raw/master"
-    "/model_zoo/models/buffalo_sc/w600k_mbf.onnx"
+    "https://huggingface.co/deepghs/insightface/resolve/main"
+    "/buffalo_s/w600k_mbf.onnx"
 )
 FACE_IDENTIFIER_INPUT_SIZE = (112, 112)

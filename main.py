@@ -90,7 +90,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--face-detector-model", help="Face detector ONNX model")
     parser.add_argument("--references", help="Directory of per-person reference face folders")
     parser.add_argument("--face-identifier-model", help="Face identifier ONNX model")
-    parser.add_argument("--event", default=True, help="Event sorting for media")
+    parser.add_argument(
+        "--event",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Group media into event folders after import (default: enabled)",
+    )
     parser.add_argument(
         "--event-threshold",
         type=int,
@@ -248,7 +253,7 @@ def report_stats(stats: ImportStats, verbose: bool) -> None:
             print(line)
 
 
-def run_import(config: RuntimeConfig, verbose: bool, event: bool) -> int:
+def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
     os.makedirs(config.dest, exist_ok=True)
     logger.info("Importing media from %s to %s", config.src, config.dest)
 
