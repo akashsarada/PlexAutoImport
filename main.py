@@ -41,6 +41,7 @@ class ImportStats:
     images_sorted: int
     videos_sorted: int
     elapsed_seconds: float
+    frames_processed: int = 0
     event_files_grouped: int = 0
     new_people_found: int = 0
     family_photos_sorted: int = 0
@@ -55,6 +56,12 @@ class ImportStats:
             return 0.0
         return self.total_entities / self.elapsed_seconds
 
+    @property
+    def images_per_second(self) -> float:
+        if self.elapsed_seconds <= 0:
+            return 0.0
+        return self.frames_processed / self.elapsed_seconds
+
 
 def _tag_video(
     pipeline: AISorterPipeline,
@@ -62,10 +69,11 @@ def _tag_video(
     file_name: str,
     keyword_writer: Optional[WriteKeywords] = None,
 ) -> dict:
-    """Tag a video with AI keywords; returns a result dict including is_family_photo."""
+    """Tag a video and return its identities, family status, and processed frame count."""
     all_categories: set[str] = set()
     all_identities: set[str] = set()
     is_family_photo = False
+    frames_processed = 0
 
     with tempfile.TemporaryDirectory() as temp_dir:
         base_name = os.path.splitext(file_name)[0]
@@ -73,6 +81,7 @@ def _tag_video(
         for frame_path in saved_frames:
             try:
                 res = pipeline.process_image(frame_path, write_metadata=False)
+                frames_processed += 1
                 all_categories.update(res["categories"])
                 all_identities.update(res["identities"])
                 if res.get("is_family_photo"):
@@ -83,7 +92,11 @@ def _tag_video(
     labels = list(all_identities) + [c for c in all_categories if c not in all_identities]
     logger.info("Labels for %s: %s", file_name, labels)
     (keyword_writer or write_keywords)(file_path, labels)
-    return {"identities": list(all_identities), "is_family_photo": is_family_photo}
+    return {
+        "identities": list(all_identities),
+        "is_family_photo": is_family_photo,
+        "frames_processed": frames_processed,
+    }
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -244,11 +257,13 @@ def report_stats(stats: ImportStats, verbose: bool) -> None:
         f"Images sorted: {stats.images_sorted}",
         f"Videos sorted: {stats.videos_sorted}",
         f"Total entities: {stats.total_entities}",
+        f"Frames processed: {stats.frames_processed}",
         f"Event files grouped: {stats.event_files_grouped}",
         f"Family photos sorted: {stats.family_photos_sorted}",
         f"New people found: {stats.new_people_found}",
         f"Elapsed time: {stats.elapsed_seconds:.2f} seconds",
         f"Entities per second: {stats.entities_per_second:.2f}",
+        f"Images per second: {stats.images_per_second:.2f}",
     )
     logger.info("Import statistics")
     for line in lines:
@@ -280,6 +295,7 @@ def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
     error_count = 0
     images_sorted = 0
     videos_sorted = 0
+    frames_processed = 0
     family_photos_sorted = 0
     destination_folders: set[str] = set()
     started_at = time.perf_counter()
@@ -296,6 +312,7 @@ def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
                         file_path,
                         keyword_writer=keyword_writer,
                     )
+                    frames_processed += 1
                     is_family = result.get("is_family_photo", False)
                 elif ext in VIDEO_EXTENSIONS:
                     result = _tag_video(
@@ -304,6 +321,7 @@ def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
                         file,
                         keyword_writer=keyword_writer,
                     )
+                    frames_processed += result.get("frames_processed", 0)
                     is_family = result.get("is_family_photo", False)
             except Exception:
                 error_count += 1
@@ -345,6 +363,7 @@ def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
         images_sorted=images_sorted,
         videos_sorted=videos_sorted,
         elapsed_seconds=time.perf_counter() - started_at,
+        frames_processed=frames_processed,
         event_files_grouped=event_files_grouped,
         new_people_found=pipeline.new_people_found,
         family_photos_sorted=family_photos_sorted,

@@ -67,7 +67,9 @@ python main.py <src> <dest> <category_model> \
 All runs write INFO-and-higher logs to the log file, including category classification,
 face detection, face identification, and metadata-write results for each processed image.
 Without `--verbose`, the terminal shows interactive prompts, the import progress bar, and a
-final summary with image/video counts, elapsed time, and entities processed per second.
+final summary with image/video counts, elapsed time, entities processed per second, and images
+processed per second. Entities count imported files, while images include still images and every
+successfully analyzed frame extracted from videos.
 After importing, each populated `Photos from <year>` folder is automatically grouped into
 `Event on <date>` folders using the configured event threshold.
 Files that fail AI processing are still moved (untagged); the exit code is non-zero when any

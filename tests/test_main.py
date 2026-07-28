@@ -160,7 +160,10 @@ class MainConfigurationTest(unittest.TestCase):
         (self.source / "clip.mp4").touch()
         (self.source / "notes.txt").touch()
         pipeline_class.return_value.process_image.return_value = {"is_family_photo": False}
-        tag_video.return_value = {"is_family_photo": False}
+        tag_video.return_value = {
+            "is_family_photo": False,
+            "frames_processed": 4,
+        }
         config = main.RuntimeConfig(
             src=str(self.source),
             dest=str(self.root / "destination"),
@@ -188,9 +191,11 @@ class MainConfigurationTest(unittest.TestCase):
         self.assertEqual(stats.images_sorted, 1)
         self.assertEqual(stats.videos_sorted, 1)
         self.assertEqual(stats.total_entities, 2)
+        self.assertEqual(stats.frames_processed, 5)
         self.assertEqual(stats.event_files_grouped, 2)
         self.assertEqual(stats.elapsed_seconds, 2.0)
         self.assertEqual(stats.entities_per_second, 1.0)
+        self.assertEqual(stats.images_per_second, 2.5)
         self.assertEqual(stats.family_photos_sorted, 0)
 
     @patch("main.report_stats")
@@ -303,6 +308,7 @@ class MainConfigurationTest(unittest.TestCase):
             images_sorted=4,
             videos_sorted=1,
             elapsed_seconds=2.0,
+            frames_processed=10,
             event_files_grouped=3,
         )
 
@@ -311,8 +317,10 @@ class MainConfigurationTest(unittest.TestCase):
 
         self.assertIn("Images sorted: 4", output.getvalue())
         self.assertIn("Videos sorted: 1", output.getvalue())
+        self.assertIn("Frames processed: 10", output.getvalue())
         self.assertIn("Event files grouped: 3", output.getvalue())
         self.assertIn("Entities per second: 2.50", output.getvalue())
+        self.assertIn("Images per second: 5.00", output.getvalue())
         self.assertIn("Elapsed time: 2.00 seconds", "\n".join(logs.output))
 
     def test_report_stats_relies_on_logs_in_verbose_mode(self) -> None:
@@ -323,7 +331,9 @@ class MainConfigurationTest(unittest.TestCase):
             main.report_stats(stats, verbose=True)
 
         self.assertEqual(output.getvalue(), "")
-        self.assertIn("Entities per second: 0.00", "\n".join(logs.output))
+        log_output = "\n".join(logs.output)
+        self.assertIn("Entities per second: 0.00", log_output)
+        self.assertIn("Images per second: 0.00", log_output)
 
     @patch("main.write_keywords")
     @patch("main.extract_frames_from_video", return_value=["frame_0.jpg", "frame_1.jpg"])
@@ -337,12 +347,35 @@ class MainConfigurationTest(unittest.TestCase):
             "is_family_photo": False,
         }
 
-        main._tag_video(pipeline, "/video/clip.mp4", "clip.mp4")
+        result = main._tag_video(pipeline, "/video/clip.mp4", "clip.mp4")
 
         calls = pipeline.process_image.call_args_list
         self.assertEqual(len(calls), 2)
+        self.assertEqual(result["frames_processed"], 2)
         for call in calls:
             self.assertEqual(call.kwargs.get("write_metadata"), False)
+
+    @patch("main.write_keywords")
+    @patch("main.extract_frames_from_video", return_value=["frame_0.jpg", "frame_1.jpg"])
+    def test_tag_video_excludes_failed_frames_from_processed_count(
+        self,
+        _extract_frames,
+        _write_keywords,
+    ) -> None:
+        pipeline = Mock()
+        pipeline.process_image.side_effect = [
+            {
+                "categories": ["nature"],
+                "identities": [],
+                "is_family_photo": False,
+            },
+            RuntimeError("inference failed"),
+        ]
+
+        with self.assertLogs("main", level="ERROR"):
+            result = main._tag_video(pipeline, "/video/clip.mp4", "clip.mp4")
+
+        self.assertEqual(result["frames_processed"], 1)
 
     @patch("main.write_keywords")
     @patch("main.extract_frames_from_video", return_value=["frame_0.jpg"])
