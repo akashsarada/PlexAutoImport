@@ -1,17 +1,18 @@
 """
 AISorterPipeline — cascading photo inference executor.
 
-Stage 1: Category classification via ONNX (always)
-Stage 2: Face detection (only when "people" category predicted)
-Stage 3: Face identification (only when faces found and references loaded)
-Stage 4: EXIF keyword write
+Stage 1: Face detection (always)
+Stage 2: Face identification (only when faces found and references loaded)
+Stage 3: Category classification via ONNX (always)
+Stage 4: EXIF keyword write (skipped when write_metadata=False)
 """
 
 import argparse
 import logging
 import os
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -20,7 +21,7 @@ import pillow_heif
 from PIL import Image
 from tqdm import tqdm
 
-from aisorter.exif_writer import write_keywords
+from aisorter.exif_writer import ExifToolKeywordWriter, write_keywords
 from aisorter.models.face_detector import FaceDetector
 from aisorter.models.face_identifier import FaceIdentifier
 from constants import (
@@ -42,6 +43,7 @@ _IMAGENET_STD = np.array(IMAGENET_STD, dtype=np.float32)
 _DEFAULT_MODEL_PATH = Path(__file__).parent / "models" / DEFAULT_CATEGORY_MODEL_FILENAME
 
 logger = logging.getLogger(__name__)
+WriteKeywords = Callable[[str, list[str]], None]
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -112,8 +114,13 @@ class AISorterPipeline:
             return 0
         return self._face_identifier.new_people_found
 
-    def process_image(self, image_path: str) -> dict:
-        """Run all stages on a single image; returns categories, identities, and labels written."""
+    def process_image(
+        self,
+        image_path: str,
+        write_metadata: bool = True,
+        keyword_writer: Optional[WriteKeywords] = None,
+    ) -> dict:
+        """Run inference and optionally write labels through *keyword_writer*."""
         bgr = self._load_image(image_path)
 
         resized = cv2.resize(bgr, CATEGORY_INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
@@ -121,34 +128,40 @@ class AISorterPipeline:
         normalized = (rgb.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
         blob = np.expand_dims(normalized.transpose(2, 0, 1), axis=0)
 
-        face_boxes = []
         identities: list[str] = []
+        t0 = time.perf_counter()
         face_boxes = self._face_detector.detect(bgr)
         logger.info(
-            "Stage 1/4 face detection complete for %s: faces=%d",
+            "Stage 1/4 face detection complete for %s: faces=%d elapsed_ms=%.1f",
             image_path,
             len(face_boxes),
+            (time.perf_counter() - t0) * 1000,
         )
+
+        t1 = time.perf_counter()
         if self._face_identifier is None:
             logger.info(
-                "Stage 2/4 face identification skipped for %s: identifier not configured",
+                "Stage 2/4 face identification skipped for %s: identifier not configured elapsed_ms=0.0",
                 image_path,
             )
         else:
             identities = self._identify_faces(bgr, face_boxes, image_path)
             logger.info(
-                "Stage 2/4 face identification complete for %s: identities=%s",
+                "Stage 2/4 face identification complete for %s: identities=%s elapsed_ms=%.1f",
                 image_path,
                 identities,
+                (time.perf_counter() - t1) * 1000,
             )
 
+        t2 = time.perf_counter()
         logits = self._category_session.run(None, {self._category_input_name: blob})[0]
         probs = _sigmoid(logits[0])
         categories = [CATEGORY_LABELS[i] for i, p in enumerate(probs) if p >= CATEGORY_THRESHOLD]
         logger.info(
-            "Stage 3/4 category classification complete for %s: categories=%s",
+            "Stage 3/4 category classification complete for %s: categories=%s elapsed_ms=%.1f",
             image_path,
             categories,
+            (time.perf_counter() - t2) * 1000,
         )
 
         is_family_photo = len(set(identities) & self._family_identities) >= 2
@@ -156,12 +169,21 @@ class AISorterPipeline:
         labels = list(identities) + [c for c in categories if c not in identities]
         if is_family_photo and "Family" not in labels:
             labels.append("Family")
-        write_keywords(image_path, labels)
-        logger.info(
-            "Stage 4/4 keyword write complete for %s: labels=%s",
-            image_path,
-            labels,
-        )
+
+        t3 = time.perf_counter()
+        if write_metadata:
+            (keyword_writer or write_keywords)(image_path, labels)
+            logger.info(
+                "Stage 4/4 keyword write complete for %s: labels=%s elapsed_ms=%.1f",
+                image_path,
+                labels,
+                (time.perf_counter() - t3) * 1000,
+            )
+        else:
+            logger.info(
+                "Stage 4/4 keyword write skipped for %s: write_metadata=False elapsed_ms=0.0",
+                image_path,
+            )
 
         return {
             "image": image_path,
@@ -222,11 +244,14 @@ class AISorterPipeline:
                     image_paths.append(os.path.join(root, fname))
 
         results: list[dict] = []
-        for path in tqdm(image_paths, desc="Sorting photos", unit="img"):
-            try:
-                results.append(self.process_image(path))
-            except Exception as exc:
-                logger.warning("Skipping %s: %s", path, exc)
+        with ExifToolKeywordWriter() as keyword_writer:
+            for path in tqdm(image_paths, desc="Sorting photos", unit="img"):
+                try:
+                    results.append(
+                        self.process_image(path, keyword_writer=keyword_writer)
+                    )
+                except Exception as exc:
+                    logger.warning("Skipping %s: %s", path, exc)
 
         return results
 

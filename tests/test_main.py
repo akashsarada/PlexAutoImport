@@ -176,6 +176,11 @@ class MainConfigurationTest(unittest.TestCase):
         self.assertEqual(result, 0)
         pipeline_class.return_value.process_image.assert_called_once()
         tag_video.assert_called_once()
+        image_writer = pipeline_class.return_value.process_image.call_args.kwargs[
+            "keyword_writer"
+        ]
+        video_writer = tag_video.call_args.kwargs["keyword_writer"]
+        self.assertIs(image_writer, video_writer)
         group_events.assert_called_once()
         self.assertEqual(group_events.call_args.args[1], 3)
         self.assertIs(group_events.call_args.args[2], move_file)
@@ -319,6 +324,116 @@ class MainConfigurationTest(unittest.TestCase):
 
         self.assertEqual(output.getvalue(), "")
         self.assertIn("Entities per second: 0.00", "\n".join(logs.output))
+
+    @patch("main.write_keywords")
+    @patch("main.extract_frames_from_video", return_value=["frame_0.jpg", "frame_1.jpg"])
+    def test_tag_video_passes_write_metadata_false_to_frames(
+        self, _extract_frames, write_keywords
+    ) -> None:
+        pipeline = Mock()
+        pipeline.process_image.return_value = {
+            "categories": ["nature"],
+            "identities": [],
+            "is_family_photo": False,
+        }
+
+        main._tag_video(pipeline, "/video/clip.mp4", "clip.mp4")
+
+        calls = pipeline.process_image.call_args_list
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            self.assertEqual(call.kwargs.get("write_metadata"), False)
+
+    @patch("main.write_keywords")
+    @patch("main.extract_frames_from_video", return_value=["frame_0.jpg"])
+    def test_tag_video_writes_metadata_once_to_source_video(
+        self, _extract_frames, write_keywords
+    ) -> None:
+        pipeline = Mock()
+        pipeline.process_image.return_value = {
+            "categories": ["nature"],
+            "identities": ["Alice"],
+            "is_family_photo": False,
+        }
+
+        main._tag_video(pipeline, "/video/clip.mp4", "clip.mp4")
+
+        write_keywords.assert_called_once()
+        path_arg = write_keywords.call_args.args[0]
+        self.assertEqual(path_arg, "/video/clip.mp4")
+
+
+    @patch("main.write_keywords")
+    @patch("main.extract_frames_from_video", return_value=["frame_0.jpg"])
+    def test_tag_video_uses_supplied_keyword_writer(
+        self,
+        _extract_frames,
+        write_keywords,
+    ) -> None:
+        pipeline = Mock()
+        pipeline.process_image.return_value = {
+            "categories": ["nature"],
+            "identities": ["Alice"],
+            "is_family_photo": False,
+        }
+        keyword_writer = Mock()
+
+        main._tag_video(
+            pipeline,
+            "/video/clip.mp4",
+            "clip.mp4",
+            keyword_writer=keyword_writer,
+        )
+
+        keyword_writer.assert_called_once_with(
+            "/video/clip.mp4",
+            ["Alice", "nature"],
+        )
+        write_keywords.assert_not_called()
+
+
+    @patch("main.report_stats")
+    @patch("main.group_events", return_value=0)
+    @patch("main.time.perf_counter", side_effect=[0.0, 1.0])
+    @patch("main.move_file", return_value=True)
+    @patch("main.progress", side_effect=lambda items, **_: items)
+    @patch("main.ExifToolKeywordWriter")
+    @patch("main.AISorterPipeline")
+    def test_keyword_write_failure_returns_nonzero_exit(
+        self,
+        pipeline_class,
+        writer_class,
+        _progress,
+        move_file,
+        _perf_counter,
+        _group_events,
+        _report_stats,
+    ) -> None:
+        (self.source / "photo.jpg").touch()
+        keyword_writer = writer_class.return_value.__enter__.return_value
+        keyword_writer.side_effect = RuntimeError("metadata write failed")
+
+        def process_image(
+            image_path: str,
+            *,
+            keyword_writer: main.WriteKeywords,
+        ) -> None:
+            keyword_writer(image_path, ["nature"])
+
+        pipeline_class.return_value.process_image.side_effect = process_image
+        config = main.RuntimeConfig(
+            src=str(self.source),
+            dest=str(self.root / "destination"),
+            category_model=str(self.category_model),
+            face_detector_model=None,
+            references=None,
+            face_identifier_model=None,
+        )
+
+        result = main.run_import(config, verbose=False)
+
+        self.assertEqual(result, 1)
+        move_file.assert_called_once()
 
 
 if __name__ == "__main__":

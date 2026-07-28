@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from aisorter.exif_writer import write_keywords
+from aisorter.exif_writer import ExifToolKeywordWriter, write_keywords
 from aisorter.pipeline import AISorterPipeline
 from aisorter.preprocess_videos import extract_frames_from_video
 from helpers.runtime_output import configure_logging, progress
@@ -20,6 +20,7 @@ from events import group_events
 from helpers.moving import move_file
 
 logger = logging.getLogger(__name__)
+WriteKeywords = Callable[[str, list[str]], None]
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,12 @@ class ImportStats:
         return self.total_entities / self.elapsed_seconds
 
 
-def _tag_video(pipeline: AISorterPipeline, file_path: str, file_name: str) -> dict:
+def _tag_video(
+    pipeline: AISorterPipeline,
+    file_path: str,
+    file_name: str,
+    keyword_writer: Optional[WriteKeywords] = None,
+) -> dict:
     """Tag a video with AI keywords; returns a result dict including is_family_photo."""
     all_categories: set[str] = set()
     all_identities: set[str] = set()
@@ -66,7 +72,7 @@ def _tag_video(pipeline: AISorterPipeline, file_path: str, file_name: str) -> di
         saved_frames = extract_frames_from_video(file_path, temp_dir, base_name)
         for frame_path in saved_frames:
             try:
-                res = pipeline.process_image(frame_path)
+                res = pipeline.process_image(frame_path, write_metadata=False)
                 all_categories.update(res["categories"])
                 all_identities.update(res["identities"])
                 if res.get("is_family_photo"):
@@ -76,7 +82,7 @@ def _tag_video(pipeline: AISorterPipeline, file_path: str, file_name: str) -> di
 
     labels = list(all_identities) + [c for c in all_categories if c not in all_identities]
     logger.info("Labels for %s: %s", file_name, labels)
-    write_keywords(file_path, labels)
+    (keyword_writer or write_keywords)(file_path, labels)
     return {"identities": list(all_identities), "is_family_photo": is_family_photo}
 
 
@@ -277,40 +283,48 @@ def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
     family_photos_sorted = 0
     destination_folders: set[str] = set()
     started_at = time.perf_counter()
-    for file in progress(files, verbose=verbose, description="Importing media", unit="file"):
-        file_path = os.path.join(config.src, file)
-        ext = os.path.splitext(file)[1].lower()
-        creation_year = datetime.datetime.fromtimestamp(os.path.getmtime(file_path)).year
-        is_family = False
+    with ExifToolKeywordWriter() as keyword_writer:
+        for file in progress(files, verbose=verbose, description="Importing media", unit="file"):
+            file_path = os.path.join(config.src, file)
+            ext = os.path.splitext(file)[1].lower()
+            creation_year = datetime.datetime.fromtimestamp(os.path.getmtime(file_path)).year
+            is_family = False
 
-        try:
-            if ext in IMAGE_EXTENSIONS:
-                result = pipeline.process_image(file_path)
-                is_family = result.get("is_family_photo", False)
-            elif ext in VIDEO_EXTENSIONS:
-                result = _tag_video(pipeline, file_path, file)
-                is_family = result.get("is_family_photo", False)
-        except Exception:
-            error_count += 1
-            logger.exception("Failed to process %s; moving it untagged", file)
+            try:
+                if ext in IMAGE_EXTENSIONS:
+                    result = pipeline.process_image(
+                        file_path,
+                        keyword_writer=keyword_writer,
+                    )
+                    is_family = result.get("is_family_photo", False)
+                elif ext in VIDEO_EXTENSIONS:
+                    result = _tag_video(
+                        pipeline,
+                        file_path,
+                        file,
+                        keyword_writer=keyword_writer,
+                    )
+                    is_family = result.get("is_family_photo", False)
+            except Exception:
+                error_count += 1
+                logger.exception("Failed to process %s; moving it untagged", file)
 
-        if is_family:
-            dest_folder = family_dest
-        else:
-            dest_folder = os.path.join(config.dest, f"Photos from {creation_year}")
-        os.makedirs(dest_folder, exist_ok=True)
-        moved = move_file(file_path, os.path.join(dest_folder, file))
-        if moved and ext in IMAGE_EXTENSIONS:
-            images_sorted += 1
-            destination_folders.add(dest_folder)
             if is_family:
-                family_photos_sorted += 1
-        elif moved and ext in VIDEO_EXTENSIONS:
-            videos_sorted += 1
-            destination_folders.add(dest_folder)
-            if is_family:
-                family_photos_sorted += 1
-
+                dest_folder = family_dest
+            else:
+                dest_folder = os.path.join(config.dest, f"Photos from {creation_year}")
+            os.makedirs(dest_folder, exist_ok=True)
+            moved = move_file(file_path, os.path.join(dest_folder, file))
+            if moved and ext in IMAGE_EXTENSIONS:
+                images_sorted += 1
+                destination_folders.add(dest_folder)
+                if is_family:
+                    family_photos_sorted += 1
+            elif moved and ext in VIDEO_EXTENSIONS:
+                videos_sorted += 1
+                destination_folders.add(dest_folder)
+                if is_family:
+                    family_photos_sorted += 1
     event_files_grouped = 0
     if event:
         for destination_folder in sorted(destination_folders):
