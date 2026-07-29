@@ -1,13 +1,15 @@
 import io
 import io
+import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import main
+from constants import DEFAULT_EVENT_THRESHOLD
 
 
 class MainConfigurationTest(unittest.TestCase):
@@ -107,6 +109,144 @@ class MainConfigurationTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Source folder"):
             main.resolve_config(args)
+
+    def _write_config_file(self, payload: dict) -> str:
+        config_path = self.root / "import-config.json"
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+        return str(config_path)
+
+    def test_config_file_supplies_locations_without_prompts(self) -> None:
+        destination = self.root / "destination"
+        config_path = self._write_config_file(
+            {
+                "src": str(self.source),
+                "dest": str(destination),
+                "model": str(self.category_model),
+                "face_detector_model": str(self.face_detector_model),
+                "references": str(self.references),
+                "face_identifier_model": str(self.face_identifier_model),
+            }
+        )
+        prompt = Mock(side_effect=AssertionError("prompt should not be called"))
+
+        config = main.resolve_config(main.parse_args(["--config", config_path]), prompt)
+
+        self.assertEqual(config.src, str(self.source.resolve()))
+        self.assertEqual(config.dest, str(destination.resolve()))
+        self.assertEqual(config.category_model, str(self.category_model.resolve()))
+        self.assertEqual(config.face_detector_model, str(self.face_detector_model.resolve()))
+        self.assertEqual(config.references, str(self.references.resolve()))
+        self.assertEqual(config.face_identifier_model, str(self.face_identifier_model.resolve()))
+        prompt.assert_not_called()
+
+    def test_command_line_locations_override_config_file(self) -> None:
+        other_source = self.root / "other-source"
+        other_source.mkdir()
+        config_path = self._write_config_file(
+            {
+                "src": str(other_source),
+                "dest": str(self.root / "config-destination"),
+                "model": str(self.category_model),
+            }
+        )
+        cli_destination = self.root / "cli-destination"
+
+        args = main.parse_args([
+            str(self.source),
+            str(cli_destination),
+            str(self.category_model),
+            "--config",
+            config_path,
+            "--no-interactive",
+        ])
+        config = main.resolve_config(args)
+
+        self.assertEqual(config.src, str(self.source.resolve()))
+        self.assertEqual(config.dest, str(cli_destination.resolve()))
+
+    def test_config_file_supplies_flags_and_thresholds(self) -> None:
+        config_path = self._write_config_file(
+            {
+                "event": False,
+                "event_threshold": 7,
+                "interactive": False,
+                "verbose": True,
+                "log_file": "import.log",
+                "family_group": "Household",
+            }
+        )
+
+        args = main.parse_args(["--config", config_path])
+
+        self.assertFalse(args.event)
+        self.assertEqual(args.event_threshold, 7)
+        self.assertFalse(args.interactive)
+        self.assertTrue(args.verbose)
+        self.assertEqual(args.log_file, os.path.join(str(self.root), "import.log"))
+        self.assertEqual(args.family_group, "Household")
+
+    def test_command_line_flags_override_config_file(self) -> None:
+        config_path = self._write_config_file({"event": False, "event_threshold": 7})
+
+        args = main.parse_args(["--config", config_path, "--event", "--event-threshold", "9"])
+
+        self.assertTrue(args.event)
+        self.assertEqual(args.event_threshold, 9)
+
+    def test_negated_command_line_flags_override_config_file(self) -> None:
+        config_path = self._write_config_file(
+            {"event": True, "interactive": True, "verbose": True}
+        )
+
+        args = main.parse_args([
+            "--config",
+            config_path,
+            "--no-event",
+            "--no-interactive",
+            "--no-verbose",
+        ])
+
+        self.assertFalse(args.event)
+        self.assertFalse(args.interactive)
+        self.assertFalse(args.verbose)
+
+    def test_config_file_supplies_family_dest(self) -> None:
+        config_path = self._write_config_file({"family_dest": "Family Photos"})
+
+        args = main.parse_args(["--config", config_path])
+
+        self.assertEqual(args.family_dest, os.path.join(str(self.root), "Family Photos"))
+
+    def test_unknown_config_key_returns_input_error_exit_code(self) -> None:
+        config_path = self._write_config_file({"destination": "/library"})
+        stderr = io.StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = main.main(["--config", config_path])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Unknown config key", stderr.getvalue())
+
+    def test_defaults_apply_without_config_file(self) -> None:
+        args = main.parse_args([])
+
+        self.assertIsNone(args.config)
+        self.assertTrue(args.event)
+        self.assertTrue(args.interactive)
+        self.assertFalse(args.verbose)
+        self.assertEqual(args.event_threshold, DEFAULT_EVENT_THRESHOLD)
+        self.assertEqual(args.log_file, "plex_auto_import.log")
+        self.assertEqual(args.family_group, "Family")
+        self.assertIsNone(args.family_dest)
+
+    def test_invalid_config_file_returns_input_error_exit_code(self) -> None:
+        stderr = io.StringIO()
+
+        with redirect_stderr(stderr):
+            exit_code = main.main(["--config", str(self.root / "absent.json")])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("Config file does not exist", stderr.getvalue())
 
     @patch("main.report_stats")
     @patch("main.progress", side_effect=lambda items, **_: items)

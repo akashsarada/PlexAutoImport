@@ -17,10 +17,19 @@ from aisorter.preprocess_videos import extract_frames_from_video
 from helpers.runtime_output import configure_logging, progress
 from constants import DEFAULT_EVENT_THRESHOLD, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from events import group_events
+from helpers.config_file import load_config_file
 from helpers.moving import move_file
 
 logger = logging.getLogger(__name__)
 WriteKeywords = Callable[[str, list[str]], None]
+ARGUMENT_DEFAULTS = {
+    "event": True,
+    "event_threshold": DEFAULT_EVENT_THRESHOLD,
+    "interactive": True,
+    "verbose": False,
+    "log_file": "plex_auto_import.log",
+    "family_group": "Family",
+}
 
 
 @dataclass(frozen=True)
@@ -106,40 +115,46 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("src", nargs="?", help="Source folder containing media to import")
     parser.add_argument("dest", nargs="?", help="Destination root for year folders")
     parser.add_argument("model", nargs="?", help="Category classifier ONNX model")
+    parser.add_argument(
+        "--config",
+        metavar="PATH",
+        help="JSON config file supplying any input not given on the command line",
+    )
     parser.add_argument("--face-detector-model", help="Face detector ONNX model")
     parser.add_argument("--references", help="Directory of per-person reference face folders")
     parser.add_argument("--face-identifier-model", help="Face identifier ONNX model")
     parser.add_argument(
         "--event",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help="Group media into event folders after import (default: enabled)",
     )
     parser.add_argument(
         "--event-threshold",
         type=int,
-        default=DEFAULT_EVENT_THRESHOLD,
+        default=None,
         help=f"Minimum same-day files needed for an event (default: {DEFAULT_EVENT_THRESHOLD})",
     )
     parser.add_argument(
         "--interactive",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help="Prompt for missing locations (default: enabled)",
     )
     parser.add_argument(
         "--verbose",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Print logs instead of the progress bar; logs are always written to file",
     )
     parser.add_argument(
         "--log-file",
-        default="plex_auto_import.log",
+        default=None,
         help="Log file path (default: plex_auto_import.log)",
     )
     parser.add_argument(
         "--family-group",
-        default="Family",
+        default=None,
         help="Name of the references group subfolder treated as family (default: Family)",
     )
     parser.add_argument(
@@ -147,7 +162,21 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help="Destination folder for photos with 2+ family members (default: <dest>/Family Photos)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    return _apply_input_precedence(args)
+
+
+def _apply_input_precedence(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill unset arguments from the config file, then from the built-in defaults."""
+    if args.config is not None:
+        for key, value in load_config_file(args.config).items():
+            if getattr(args, key, None) is None:
+                setattr(args, key, value)
+
+    for key, value in ARGUMENT_DEFAULTS.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, value)
+    return args
 
 
 def _resolve_path(
@@ -378,7 +407,12 @@ def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    args = parse_args(argv)
+    try:
+        args = parse_args(argv)
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+
     configure_logging(args.verbose, args.log_file)
     try:
         config = resolve_config(args)

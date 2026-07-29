@@ -60,9 +60,38 @@ python main.py <src> <dest> <category_model> \
   (`references/Alice/*.jpg`, `references/Bob/*.jpg`) to enable name tagging
 - `--face-identifier-model` — optional local face identifier model; prompted only when references are enabled
 - `--event-threshold` — same-day files needed to create an event folder (default: `15`)
+- `--config` — JSON file supplying any input not given on the command line
 - `--no-interactive` — fail instead of prompting when a required location is missing
 - `--verbose` — print all logs to the terminal instead of showing the progress bar
 - `--log-file` — change the persistent log path (default: `plex_auto_import.log`)
+
+#### Config file
+
+`--config` reads inputs from a JSON file so repeat imports need no long command line:
+
+```bash
+python main.py --config import-config.json
+```
+
+```json
+{
+  "src": "/Volumes/CAMERA/DCIM",
+  "dest": "/Volumes/media/Photos",
+  "model": "aisorter/open_weights/category_95.onnx",
+  "references": "references",
+  "face_identifier_model": "~/.cache/aisorter/face_identifier.onnx",
+  "event_threshold": 20,
+  "interactive": false
+}
+```
+
+Precedence is command line, then config file, then built-in defaults; anything still
+missing is prompted for unless `--no-interactive` is set. Supported keys mirror the
+argument names: `src`, `dest`, `model`, `face_detector_model`, `references`,
+`face_identifier_model`, `family_group`, `family_dest`, `event`, `event_threshold`,
+`interactive`, `verbose`, and `log_file`. Relative paths resolve against the config
+file's own directory, `~` is expanded, and `null` means "not set". Unknown keys and
+wrong value types are rejected with exit code `2`.
 
 All runs write INFO-and-higher logs to the log file, including category classification,
 face detection, face identification, and metadata-write results for each processed image.
