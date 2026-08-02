@@ -35,7 +35,7 @@ def extract_frames_from_video(video_path: str, output_dir: str, base_name: str) 
             index = min(max(0, int(total_frames * percentage)), total_frames - 1)
             frame_indices.append(index)
     else:
-        step_frames = int(2 * fps)
+        step_frames = int((DURATION_THRESHOLD_SECONDS / 3) * fps)
         current_frame = int(0.75 * fps)
         while current_frame < total_frames:
             frame_indices.append(current_frame)

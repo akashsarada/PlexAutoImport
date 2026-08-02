@@ -13,7 +13,7 @@ from exiftool import ExifToolHelper
 from constants import VIDEO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
-_WRITE_PARAMS = ["-overwrite_original", "-P"]
+_WRITE_PARAMS = ["-overwrite_original", "-P", "-m"]
 
 
 def _keyword_tags(image_path: str, keywords: list[str]) -> dict[str, list[str]]:
@@ -55,17 +55,47 @@ class ExifToolKeywordWriter:
         """Write keyword tags, restarting ExifTool after a helper failure."""
         if not keywords:
             return
+        tags = _keyword_tags(image_path, keywords)
         try:
             helper = self._get_helper()
             helper.set_tags(
                 image_path,
-                tags=_keyword_tags(image_path, keywords),
+                tags=tags,
                 params=_WRITE_PARAMS,
             )
         except Exception as error:
-            logger.warning("Failed to write keywords %s to %s: %s", keywords, image_path, error)
-            self._close(None, None, None)
-            raise
+            # If writing all tags failed and it's a video, try falling back to just XMP:Subject
+            is_video = os.path.splitext(image_path)[1].lower() in VIDEO_EXTENSIONS
+            if is_video and len(tags) > 1:
+                logger.warning(
+                    "Failed to write full tags to video %s: %s. Retrying with XMP:Subject only.",
+                    image_path,
+                    error,
+                )
+                self._close(None, None, None)
+                # Clean up any leftover temporary file created by exiftool
+                tmp_path = f"{image_path}_exiftool_tmp"
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception as clean_error:
+                        logger.warning("Failed to clean up temporary file %s: %s", tmp_path, clean_error)
+                try:
+                    helper = self._get_helper()
+                    helper.set_tags(
+                        image_path,
+                        tags={"XMP:Subject": keywords},
+                        params=_WRITE_PARAMS,
+                    )
+                    return
+                except Exception as fallback_error:
+                    logger.warning("Fallback write to %s also failed: %s", image_path, fallback_error)
+                    self._close(None, None, None)
+                    raise fallback_error
+            else:
+                logger.warning("Failed to write keywords %s to %s: %s", keywords, image_path, error)
+                self._close(None, None, None)
+                raise
 
     def _get_helper(self) -> ExifToolHelper:
         if self._helper is None:

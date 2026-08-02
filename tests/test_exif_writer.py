@@ -23,7 +23,7 @@ class ExifToolKeywordWriterTest(unittest.TestCase):
                 call(
                     "photo.jpg",
                     tags={"EXIF:Keywords": ["Alice"], "XMP:Subject": ["Alice"]},
-                    params=["-overwrite_original", "-P"],
+                    params=["-overwrite_original", "-P", "-m"],
                 ),
                 call(
                     "clip.mp4",
@@ -32,11 +32,45 @@ class ExifToolKeywordWriterTest(unittest.TestCase):
                         "Keys:Keywords": ["Family"],
                         "ItemList:Keyword": ["Family"],
                     },
-                    params=["-overwrite_original", "-P"],
+                    params=["-overwrite_original", "-P", "-m"],
                 ),
             ],
         )
         context.__exit__.assert_called_once_with(None, None, None)
+
+    @patch("aisorter.exif_writer.ExifToolHelper")
+    def test_fallback_on_video_write_failure(self, helper_class) -> None:
+        first_context = MagicMock()
+        first_helper = MagicMock()
+        first_helper.set_tags.side_effect = RuntimeError("Process error writing Keys:Keywords")
+        first_context.__enter__.return_value = first_helper
+
+        second_context = MagicMock()
+        second_helper = MagicMock()
+        second_context.__enter__.return_value = second_helper
+        helper_class.side_effect = [first_context, second_context]
+
+        with self.assertLogs("aisorter.exif_writer", level="WARNING") as log:
+            with ExifToolKeywordWriter() as writer:
+                writer("clip.mp4", ["Family"])
+
+        # First call should try all tags
+        first_helper.set_tags.assert_called_once_with(
+            "clip.mp4",
+            tags={
+                "XMP:Subject": ["Family"],
+                "Keys:Keywords": ["Family"],
+                "ItemList:Keyword": ["Family"],
+            },
+            params=["-overwrite_original", "-P", "-m"],
+        )
+        # Second call (fallback) should only try XMP:Subject
+        second_helper.set_tags.assert_called_once_with(
+            "clip.mp4",
+            tags={"XMP:Subject": ["Family"]},
+            params=["-overwrite_original", "-P", "-m"],
+        )
+        self.assertTrue(any("Retrying with XMP:Subject only" in msg for msg in log.output))
 
     @patch("aisorter.exif_writer.ExifToolHelper")
     def test_empty_keywords_do_not_start_helper(self, helper_class) -> None:
