@@ -15,6 +15,7 @@ from constants.inference import (
 )
 from constants.media import (
     DEFAULT_EVENT_THRESHOLD,
+    DEFAULT_FAMILY_GROUP,
     DURATION_THRESHOLD_SECONDS,
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,

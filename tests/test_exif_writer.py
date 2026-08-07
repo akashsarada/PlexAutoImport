@@ -22,7 +22,7 @@ class ExifToolKeywordWriterTest(unittest.TestCase):
             [
                 call(
                     "photo.jpg",
-                    tags={"EXIF:Keywords": ["Alice"], "XMP:Subject": ["Alice"]},
+                    tags={"IPTC:Keywords": ["Alice"], "XMP:Subject": ["Alice"]},
                     params=["-overwrite_original", "-P", "-m"],
                 ),
                 call(

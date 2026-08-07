@@ -12,7 +12,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -21,7 +21,7 @@ import pillow_heif
 from PIL import Image
 from tqdm import tqdm
 
-from aisorter.exif_writer import ExifToolKeywordWriter, write_keywords
+from aisorter.exif_writer import ExifToolKeywordWriter, WriteKeywords, write_keywords
 from aisorter.models.face_detector import FaceDetector
 from aisorter.models.face_identifier import FaceIdentifier
 from constants import (
@@ -29,6 +29,7 @@ from constants import (
     CATEGORY_LABELS,
     CATEGORY_THRESHOLD,
     DEFAULT_CATEGORY_MODEL_FILENAME,
+    DEFAULT_FAMILY_GROUP,
     IMAGE_EXTENSIONS,
     IMAGENET_MEAN,
     IMAGENET_STD,
@@ -43,7 +44,11 @@ _IMAGENET_STD = np.array(IMAGENET_STD, dtype=np.float32)
 _DEFAULT_MODEL_PATH = Path(__file__).parent / "models" / DEFAULT_CATEGORY_MODEL_FILENAME
 
 logger = logging.getLogger(__name__)
-WriteKeywords = Callable[[str, list[str]], None]
+
+
+def merge_labels(identities: list[str], categories: list[str]) -> list[str]:
+    """Combine identity and category labels, identities first, without duplicates."""
+    return list(identities) + [c for c in categories if c not in identities]
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -71,8 +76,9 @@ class AISorterPipeline:
         face_identifier_model_path: Optional[str] = None,
         face_confidence: float = 0.7,
         identity_threshold: float = 0.4,
-        family_group: str = "Family",
+        family_group: str = DEFAULT_FAMILY_GROUP,
     ) -> None:
+        self._family_group = family_group
         self._face_detector = FaceDetector(
             confidence_threshold=face_confidence,
             model_path=face_detector_model_path,
@@ -166,9 +172,9 @@ class AISorterPipeline:
 
         is_family_photo = len(set(identities) & self._family_identities) >= 2
 
-        labels = list(identities) + [c for c in categories if c not in identities]
-        if is_family_photo and "Family" not in labels:
-            labels.append("Family")
+        labels = merge_labels(identities, categories)
+        if is_family_photo and self._family_group not in labels:
+            labels.append(self._family_group)
 
         t3 = time.perf_counter()
         if write_metadata:

@@ -34,7 +34,7 @@ def move_file(src: str, dest: str) -> bool:
 
 
 def robust_move(src: str, dest: str) -> str:
-    """Rename on one filesystem, otherwise copy then delete the source."""
+    """Rename on one filesystem, otherwise copy to a temp name then rename into place."""
     try:
         os.rename(src, dest)
         return "rename"
@@ -42,7 +42,16 @@ def robust_move(src: str, dest: str) -> str:
         if error.errno != errno.EXDEV:
             raise
 
-    shutil.copy2(src, dest)
+    tmp_dest = f"{dest}.importing"
+    try:
+        shutil.copy2(src, tmp_dest)
+        os.rename(tmp_dest, dest)
+    except BaseException:
+        try:
+            os.remove(tmp_dest)
+        except OSError:
+            pass
+        raise
     try:
         os.remove(src)
     except PermissionError:

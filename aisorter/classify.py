@@ -88,14 +88,19 @@ def load_model(arch_info, pth_path, device):
 
     # Prefer metadata in checkpoint, fall back to the user-selected architecture
     model_type  = checkpoint.get("model_type",  arch_info["model_type"])
-    class_names = checkpoint.get("class_names", None)
+    class_names = checkpoint.get("class_names")
     img_size    = checkpoint.get("img_size",    arch_info["img_size"])
+
+    if class_names is None:
+        raise ValueError(
+            "Checkpoint missing class_names; re-train or re-export with train.py"
+        )
 
     # Map model_type → class
     type_to_cls = {a["model_type"]: a["cls"] for a in ARCHITECTURES}
     ModelCls = type_to_cls.get(model_type, arch_info["cls"])
 
-    num_classes = len(class_names) if class_names else 3
+    num_classes = len(class_names)
 
     if model_type == "sorter_mobilenet":
         model = ModelCls(num_classes=num_classes, pretrained=False)
@@ -254,7 +259,7 @@ def main():
     header("STEP 2 — SELECT WEIGHTS FILE (.pth)")
 
     # Scan for .pth files to offer as suggestions
-    pth_files = sorted(glob.glob("**/*.pth", recursive=True) + glob.glob("*.pth"))
+    pth_files = sorted(set(glob.glob("**/*.pth", recursive=True)))
     if pth_files:
         print("  Found checkpoints:")
         for i, f in enumerate(pth_files[:10], 1):
@@ -407,7 +412,7 @@ def main():
             dst = safe_dest(os.path.join(output_root, cls_name), filename)
             shutil.move(vid_path, dst)
             ops.append({"src": vid_path, "dst": dst, "op": "move"})
-            class_tally[cls_name] = class_tally.get(cls_name, 0) + 1
+            class_tally[cls_name] += 1
             sorted_count += 1
             print(f"  →  {cls_name}/  ({conf:.1%} avg, majority vote)")
         else:
@@ -422,7 +427,7 @@ def main():
             shutil.move(vid_path, dst_paths[-1])
             ops.append({"src": vid_path, "dst": dst_paths[-1], "op": "move"})
             for cls_name, _ in hits:
-                class_tally[cls_name] = class_tally.get(cls_name, 0) + 1
+                class_tally[cls_name] += 1
             sorted_count += 1
             print(f"  →  [{labels_str}]  (majority vote)")
 
@@ -433,7 +438,8 @@ def main():
     print(f"  Total images   : {len(all_images)}")
     print(f"  Sorted         : {sorted_count}")
     print(f"  Unsorted (<{CONFIDENCE_THRESHOLD:.0%}): {unsorted_count}")
-    print(f"  Time elapsed   : {elapsed:.1f}s  ({len(all_images)/elapsed:.1f} img/s)")
+    rate = len(all_images) / elapsed if elapsed > 0 else 0.0
+    print(f"  Time elapsed   : {elapsed:.1f}s  ({rate:.1f} img/s)")
     print()
     print("  Per-class breakdown:")
     for cls in class_names:

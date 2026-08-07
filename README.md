@@ -101,8 +101,11 @@ processed per second. Entities count imported files, while images include still 
 successfully analyzed frame extracted from videos.
 After importing, each populated `Photos from <year>` folder is automatically grouped into
 `Event on <date>` folders using the configured event threshold.
-Files that fail AI processing are still moved (untagged); the exit code is non-zero when any
-file failed.
+Years and event dates come from the file's capture date: EXIF/QuickTime metadata first, then
+a `YYYYMMDD_*` filename prefix, then the file's modification time.
+Files that fail AI processing are still moved (untagged). Non-media files are left in the
+source folder, as are files whose destination already exists; the exit code is non-zero when
+any file failed or was left behind because its destination already existed.
 
 On Windows, `run.bat` starts interactive import mode; `events.bat` is a thin wrapper whose
 placeholder paths must be edited before use.
@@ -113,9 +116,9 @@ placeholder paths must be edited before use.
 python events.py <src> <threshold>
 ```
 
-Bundles consecutive same-day photos (date-prefixed filenames such as
-`20190614_123456.jpg`) into `Event on <date>` folders when at least
-`threshold` photos share a date.
+Bundles same-day photos into `Event on <date>` folders when at least `threshold`
+photos share a capture date. Dates are derived the same way as the importer:
+EXIF/QuickTime metadata, then a `YYYYMMDD_*` filename prefix, then modification time.
 
 ## AI sorter (`aisorter/`)
 

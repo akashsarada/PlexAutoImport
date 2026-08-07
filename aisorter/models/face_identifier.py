@@ -9,6 +9,7 @@ Targets legacy NAS x86 CPU via onnxruntime — no torch dependency.
 """
 
 import logging
+import os
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -289,6 +290,10 @@ class FaceIdentifier:
                 matched_unknown_path.rename(target_matched_path)
             except OSError as error:
                 logger.error("Failed to move matched headshot %s: %s", matched_unknown_path, error)
+                try:
+                    os.rmdir(new_person_dir)
+                except OSError:
+                    pass
                 unknown_dir.mkdir(parents=True, exist_ok=True)
                 self._save_unknown_face(unknown_dir / out_filename, face_crop, query)
                 return None
@@ -305,6 +310,10 @@ class FaceIdentifier:
                         rollback_error,
                     )
                     self._remove_unknown_cache(matched_unknown_path)
+                try:
+                    os.rmdir(new_person_dir)
+                except OSError:
+                    pass
                 return None
 
             if matched_embedding is not None:

@@ -104,14 +104,14 @@ def save_checkpoint(model: nn.Module, path: str, class_names: list[str], model_t
 
 
 class _TransformSubset(torch.utils.data.Dataset):
-    def __init__(self, subset, transform):
+    def __init__(self, subset: torch.utils.data.Subset, transform: object) -> None:
         self._subset = subset
         self._transform = transform
 
     def __len__(self) -> int:
         return len(self._subset)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         image, label = self._subset[idx]
         if self._transform is not None:
             image = self._transform(image)
@@ -217,13 +217,13 @@ def main() -> None:
         if (epoch - best_val_epoch) >= args.early_stopping_tolerance:
             print(f"\nEarly stopping triggered: No validation improvement for {args.early_stopping_tolerance} epochs.")
             break
-        timestamp = int(datetime.now().timestamp() * 1000) 
+        timestamp = int(datetime.now().timestamp() * 1000)
         train_loss = run_epoch(model, train_loader, criterion, optimizer, device, train=True)
         val_loss = run_epoch(model, val_loader, criterion, optimizer, device, train=False)
         val_acc = compute_val_accuracy(model, val_loader, device, num_classes)
 
         scheduler.step()
-        
+
         history["timestamp"].append(timestamp)
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)

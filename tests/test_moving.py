@@ -1,4 +1,6 @@
 import errno
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,20 +30,75 @@ class MovingTest(unittest.TestCase):
         self.assertEqual(destination.read_text(encoding="utf-8"), "media")
         copy.assert_not_called()
 
-    @patch(
-        "helpers.moving.os.rename",
-        side_effect=OSError(errno.EXDEV, "cross-device link"),
-    )
-    def test_move_file_copies_across_filesystems(self, _rename) -> None:
+    def test_move_file_copies_across_filesystems(self) -> None:
         source = self.root / "source.mp4"
         destination = self.root / "destination.mp4"
         source.write_text("video", encoding="utf-8")
 
-        moved = move_file(str(source), str(destination))
+        with patch(
+            "helpers.moving.os.rename",
+            side_effect=self._fail_first_rename_with_exdev(),
+        ):
+            moved = move_file(str(source), str(destination))
 
         self.assertTrue(moved)
         self.assertFalse(source.exists())
         self.assertEqual(destination.read_text(encoding="utf-8"), "video")
+        self.assertFalse((self.root / "destination.mp4.importing").exists())
+
+    def test_robust_move_copies_via_temp_name_then_renames(self) -> None:
+        source = self.root / "source.mp4"
+        destination = self.root / "destination.mp4"
+        source.write_text("video", encoding="utf-8")
+        copied_targets: list[str] = []
+        real_copy2 = shutil.copy2
+
+        def recording_copy2(src: str, dest: str) -> None:
+            copied_targets.append(dest)
+            real_copy2(src, dest)
+
+        with patch(
+            "helpers.moving.os.rename",
+            side_effect=self._fail_first_rename_with_exdev(),
+        ), patch("helpers.moving.shutil.copy2", side_effect=recording_copy2):
+            mode = robust_move(str(source), str(destination))
+
+        self.assertEqual(mode, "copy")
+        self.assertEqual(copied_targets, [str(destination) + ".importing"])
+        self.assertEqual(destination.read_text(encoding="utf-8"), "video")
+
+    def test_robust_move_cleans_up_temp_file_when_copy_fails(self) -> None:
+        source = self.root / "source.mp4"
+        destination = self.root / "destination.mp4"
+        source.write_text("video", encoding="utf-8")
+
+        def failing_copy2(src: str, dest: str) -> None:
+            Path(dest).write_text("partial", encoding="utf-8")
+            raise OSError("disk full")
+
+        with patch(
+            "helpers.moving.os.rename",
+            side_effect=self._fail_first_rename_with_exdev(),
+        ), patch("helpers.moving.shutil.copy2", side_effect=failing_copy2):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                robust_move(str(source), str(destination))
+
+        self.assertTrue(source.exists())
+        self.assertFalse(destination.exists())
+        self.assertFalse((self.root / "destination.mp4.importing").exists())
+
+    @staticmethod
+    def _fail_first_rename_with_exdev():
+        real_rename = os.rename
+        failed = []
+
+        def fake_rename(src: str, dest: str) -> None:
+            if not failed:
+                failed.append(True)
+                raise OSError(errno.EXDEV, "cross-device link")
+            real_rename(src, dest)
+
+        return fake_rename
 
     def test_move_file_skips_existing_destination(self) -> None:
         source = self.root / "source.jpg"
@@ -78,10 +135,6 @@ class MovingTest(unittest.TestCase):
         self.assertIn("bytes=1234", output)
         self.assertIn("elapsed_ms=125.0", output)
 
-    @patch(
-        "helpers.moving.os.rename",
-        side_effect=OSError(errno.EXDEV, "cross-device link"),
-    )
     @patch("helpers.moving.os.remove", side_effect=[PermissionError, None])
     @patch("helpers.moving.shutil.copy2")
     @patch("helpers.moving.time.sleep")
@@ -90,13 +143,27 @@ class MovingTest(unittest.TestCase):
         sleep,
         _copy,
         remove,
-        _rename,
     ) -> None:
-        mode = robust_move("source", "destination")
+        with patch(
+            "helpers.moving.os.rename",
+            side_effect=self._fail_first_rename_with_exdev_noop_after(),
+        ):
+            mode = robust_move("source", "destination")
 
         self.assertEqual(mode, "copy")
         self.assertEqual(remove.call_count, 2)
         self.assertEqual(sleep.call_args_list, [call(1)])
+
+    @staticmethod
+    def _fail_first_rename_with_exdev_noop_after():
+        failed = []
+
+        def fake_rename(src: str, dest: str) -> None:
+            if not failed:
+                failed.append(True)
+                raise OSError(errno.EXDEV, "cross-device link")
+
+        return fake_rename
 
     @patch("helpers.moving.shutil.copy2")
     @patch(

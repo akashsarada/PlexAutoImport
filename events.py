@@ -1,4 +1,4 @@
-"""Group date-prefixed media into per-day event folders."""
+"""Group media into per-day event folders using the shared capture-date derivation."""
 
 import argparse
 import logging
@@ -8,6 +8,7 @@ from collections import defaultdict
 from typing import Callable, Optional
 
 from constants import DEFAULT_EVENT_THRESHOLD
+from helpers.dates import ExifDateReader, file_date
 from helpers.moving import move_file
 
 logger = logging.getLogger(__name__)
@@ -15,16 +16,11 @@ logger = logging.getLogger(__name__)
 MoveFile = Callable[[str, str], bool]
 
 
-def date_prefix(filename: str) -> Optional[str]:
-    """Return the leading date token of an underscore-separated filename, or None."""
-    prefix = filename.split("_")[0]
-    return prefix if len(prefix) == 8 and prefix.isdigit() else None
-
-
 def group_events(
     directory: str,
     threshold: int = DEFAULT_EVENT_THRESHOLD,
     move: MoveFile = move_file,
+    exif_reader: Optional[ExifDateReader] = None,
 ) -> int:
     """Group same-date files when their count meets *threshold*; return files moved."""
     if threshold < 1:
@@ -32,28 +28,26 @@ def group_events(
 
     files_by_date: dict[str, list[str]] = defaultdict(list)
     for file in sorted(os.listdir(directory)):
-        if not os.path.isfile(os.path.join(directory, file)):
+        path = os.path.join(directory, file)
+        if not os.path.isfile(path):
             continue
-        file_date = date_prefix(file)
-        if file_date is None:
-            logger.warning("Skipping file without date prefix: %s", file)
-            continue
-        files_by_date[file_date].append(file)
+        file_key = file_date(path, exif_reader).strftime("%Y%m%d")
+        files_by_date[file_key].append(file)
 
     moved_count = 0
-    for file_date, files in files_by_date.items():
+    for file_key, files in files_by_date.items():
         if len(files) < threshold:
             logger.info(
                 "Event on %s skipped: %d file(s), threshold=%d",
-                file_date,
+                file_key,
                 len(files),
                 threshold,
             )
             continue
 
-        event_folder = os.path.join(directory, f"Event on {file_date}")
+        event_folder = os.path.join(directory, f"Event on {file_key}")
         os.makedirs(event_folder, exist_ok=True)
-        logger.info("Grouping event on %s: %d file(s)", file_date, len(files))
+        logger.info("Grouping event on %s: %d file(s)", file_key, len(files))
         for file in files:
             if move(
                 os.path.join(directory, file),
@@ -69,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Bundle same-day media into 'Event on <date>' folders."
     )
-    parser.add_argument("src", help="Folder of date-prefixed media (e.g. 20190614_123456.jpg)")
+    parser.add_argument("src", help="Folder of media files to group into per-day events")
     parser.add_argument(
         "threshold",
         nargs="?",
@@ -86,8 +80,11 @@ if __name__ == "__main__":
     if not os.path.isdir(args.src):
         logger.error("Source folder does not exist: %s", args.src)
         sys.exit(1)
+    from aisorter.exif_writer import ExifToolKeywordWriter
+
     try:
-        group_events(args.src, args.threshold)
+        with ExifToolKeywordWriter() as writer:
+            group_events(args.src, args.threshold, exif_reader=writer.read_capture_date)
     except ValueError as error:
         logger.error("%s", error)
         sys.exit(2)

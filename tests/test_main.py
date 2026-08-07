@@ -1,4 +1,4 @@
-import io
+import datetime
 import io
 import json
 import os
@@ -285,10 +285,12 @@ class MainConfigurationTest(unittest.TestCase):
     @patch("main.move_file", return_value=True)
     @patch("main._tag_video")
     @patch("main.progress", side_effect=lambda items, **_: items)
+    @patch("main.ExifToolKeywordWriter")
     @patch("main.AISorterPipeline")
     def test_run_import_reports_sorted_media_stats(
         self,
         pipeline_class,
+        writer_class,
         _progress,
         tag_video,
         move_file,
@@ -299,6 +301,8 @@ class MainConfigurationTest(unittest.TestCase):
         (self.source / "photo.jpg").touch()
         (self.source / "clip.mp4").touch()
         (self.source / "notes.txt").touch()
+        keyword_writer = writer_class.return_value.__enter__.return_value
+        keyword_writer.read_capture_date.return_value = None
         pipeline_class.return_value.process_image.return_value = {"is_family_photo": False}
         tag_video.return_value = {
             "is_family_photo": False,
@@ -319,6 +323,7 @@ class MainConfigurationTest(unittest.TestCase):
         self.assertEqual(result, 0)
         pipeline_class.return_value.process_image.assert_called_once()
         tag_video.assert_called_once()
+        self.assertEqual(move_file.call_count, 2)
         image_writer = pipeline_class.return_value.process_image.call_args.kwargs[
             "keyword_writer"
         ]
@@ -327,6 +332,10 @@ class MainConfigurationTest(unittest.TestCase):
         group_events.assert_called_once()
         self.assertEqual(group_events.call_args.args[1], 3)
         self.assertIs(group_events.call_args.args[2], move_file)
+        self.assertIs(
+            group_events.call_args.kwargs["exif_reader"],
+            keyword_writer.read_capture_date,
+        )
         stats = report_stats.call_args.args[0]
         self.assertEqual(stats.images_sorted, 1)
         self.assertEqual(stats.videos_sorted, 1)
@@ -337,6 +346,8 @@ class MainConfigurationTest(unittest.TestCase):
         self.assertEqual(stats.entities_per_second, 1.0)
         self.assertEqual(stats.images_per_second, 2.5)
         self.assertEqual(stats.family_photos_sorted, 0)
+        self.assertEqual(stats.files_skipped, 0)
+        self.assertEqual(stats.non_media_skipped, 1)
 
     @patch("main.report_stats")
     @patch("main.group_events", return_value=0)
@@ -585,6 +596,7 @@ class MainConfigurationTest(unittest.TestCase):
         (self.source / "photo.jpg").touch()
         keyword_writer = writer_class.return_value.__enter__.return_value
         keyword_writer.side_effect = RuntimeError("metadata write failed")
+        keyword_writer.read_capture_date.return_value = None
 
         def process_image(
             image_path: str,
@@ -607,6 +619,119 @@ class MainConfigurationTest(unittest.TestCase):
 
         self.assertEqual(result, 1)
         move_file.assert_called_once()
+
+    @patch("main.report_stats")
+    @patch("main.group_events", return_value=0)
+    @patch("main.time.perf_counter", side_effect=[0.0, 1.0])
+    @patch("main.move_file", side_effect=[OSError("disk full"), True])
+    @patch("main.progress", side_effect=lambda items, **_: items)
+    @patch("main.ExifToolKeywordWriter")
+    @patch("main.AISorterPipeline")
+    def test_move_failure_continues_and_returns_nonzero_exit(
+        self,
+        pipeline_class,
+        writer_class,
+        _progress,
+        move_file,
+        _perf_counter,
+        _group_events,
+        report_stats,
+    ) -> None:
+        (self.source / "a.jpg").touch()
+        (self.source / "b.jpg").touch()
+        writer_class.return_value.__enter__.return_value.read_capture_date.return_value = None
+        pipeline_class.return_value.process_image.return_value = {"is_family_photo": False}
+        config = main.RuntimeConfig(
+            src=str(self.source),
+            dest=str(self.root / "destination"),
+            category_model=str(self.category_model),
+            face_detector_model=None,
+            references=None,
+            face_identifier_model=None,
+        )
+
+        with self.assertLogs("main", level="ERROR"):
+            result = main.run_import(config, verbose=False)
+
+        self.assertEqual(result, 1)
+        self.assertEqual(move_file.call_count, 2)
+        stats = report_stats.call_args.args[0]
+        self.assertEqual(stats.images_sorted, 1)
+
+    @patch("main.report_stats")
+    @patch("main.group_events", return_value=0)
+    @patch("main.time.perf_counter", side_effect=[0.0, 1.0])
+    @patch("main.move_file", return_value=False)
+    @patch("main.progress", side_effect=lambda items, **_: items)
+    @patch("main.ExifToolKeywordWriter")
+    @patch("main.AISorterPipeline")
+    def test_skipped_duplicate_counted_and_returns_nonzero_exit(
+        self,
+        pipeline_class,
+        writer_class,
+        _progress,
+        _move_file,
+        _perf_counter,
+        _group_events,
+        report_stats,
+    ) -> None:
+        (self.source / "photo.jpg").touch()
+        writer_class.return_value.__enter__.return_value.read_capture_date.return_value = None
+        pipeline_class.return_value.process_image.return_value = {"is_family_photo": False}
+        config = main.RuntimeConfig(
+            src=str(self.source),
+            dest=str(self.root / "destination"),
+            category_model=str(self.category_model),
+            face_detector_model=None,
+            references=None,
+            face_identifier_model=None,
+        )
+
+        result = main.run_import(config, verbose=False)
+
+        self.assertEqual(result, 1)
+        stats = report_stats.call_args.args[0]
+        self.assertEqual(stats.files_skipped, 1)
+        self.assertEqual(stats.images_sorted, 0)
+
+    @patch("main.report_stats")
+    @patch("main.group_events", return_value=0)
+    @patch("main.time.perf_counter", side_effect=[0.0, 1.0])
+    @patch("main.move_file", return_value=True)
+    @patch("main.progress", side_effect=lambda items, **_: items)
+    @patch("main.ExifToolKeywordWriter")
+    @patch("main.AISorterPipeline")
+    def test_year_folder_uses_exif_capture_date(
+        self,
+        pipeline_class,
+        writer_class,
+        _progress,
+        move_file,
+        _perf_counter,
+        _group_events,
+        _report_stats,
+    ) -> None:
+        (self.source / "photo.jpg").touch()
+        keyword_writer = writer_class.return_value.__enter__.return_value
+        keyword_writer.read_capture_date.return_value = datetime.date(2019, 6, 14)
+        pipeline_class.return_value.process_image.return_value = {"is_family_photo": False}
+        dest = str(self.root / "destination")
+        config = main.RuntimeConfig(
+            src=str(self.source),
+            dest=dest,
+            category_model=str(self.category_model),
+            face_detector_model=None,
+            references=None,
+            face_identifier_model=None,
+        )
+
+        main.run_import(config, verbose=False)
+
+        dest_arg = move_file.call_args.args[1]
+        self.assertEqual(
+            dest_arg,
+            os.path.join(dest, "Photos from 2019", "photo.jpg"),
+        )
 
 
 if __name__ == "__main__":

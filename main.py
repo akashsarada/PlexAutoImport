@@ -1,7 +1,6 @@
 """Import photos and videos: tag with AI-detected keywords, then file into year folders."""
 
 import argparse
-import datetime
 import logging
 import os
 import sys
@@ -11,24 +10,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from aisorter.exif_writer import ExifToolKeywordWriter, write_keywords
-from aisorter.pipeline import AISorterPipeline
+from aisorter.exif_writer import ExifToolKeywordWriter, WriteKeywords, write_keywords
+from aisorter.pipeline import AISorterPipeline, merge_labels
 from aisorter.preprocess_videos import extract_frames_from_video
 from helpers.runtime_output import configure_logging, progress
-from constants import DEFAULT_EVENT_THRESHOLD, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
+from constants import (
+    DEFAULT_EVENT_THRESHOLD,
+    DEFAULT_FAMILY_GROUP,
+    IMAGE_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+)
 from events import group_events
 from helpers.config_file import load_config_file
+from helpers.dates import file_date
 from helpers.moving import move_file
 
 logger = logging.getLogger(__name__)
-WriteKeywords = Callable[[str, list[str]], None]
 ARGUMENT_DEFAULTS = {
     "event": True,
     "event_threshold": DEFAULT_EVENT_THRESHOLD,
     "interactive": True,
     "verbose": False,
     "log_file": "plex_auto_import.log",
-    "family_group": "Family",
+    "family_group": DEFAULT_FAMILY_GROUP,
 }
 
 
@@ -41,7 +45,7 @@ class RuntimeConfig:
     references: Optional[str]
     face_identifier_model: Optional[str]
     event_threshold: int = DEFAULT_EVENT_THRESHOLD
-    family_group: str = "Family"
+    family_group: str = DEFAULT_FAMILY_GROUP
     family_dest: Optional[str] = None
 
 
@@ -54,6 +58,8 @@ class ImportStats:
     event_files_grouped: int = 0
     new_people_found: int = 0
     family_photos_sorted: int = 0
+    files_skipped: int = 0
+    non_media_skipped: int = 0
 
     @property
     def total_entities(self) -> int:
@@ -98,7 +104,7 @@ def _tag_video(
             except Exception:
                 logger.exception("Failed to process frame %s", frame_path)
 
-    labels = list(all_identities) + [c for c in all_categories if c not in all_identities]
+    labels = merge_labels(sorted(all_identities), sorted(all_categories))
     logger.info("Labels for %s: %s", file_name, labels)
     (keyword_writer or write_keywords)(file_path, labels)
     return {
@@ -290,6 +296,8 @@ def report_stats(stats: ImportStats, verbose: bool) -> None:
         f"Event files grouped: {stats.event_files_grouped}",
         f"Family photos sorted: {stats.family_photos_sorted}",
         f"New people found: {stats.new_people_found}",
+        f"Files skipped (already in destination): {stats.files_skipped}",
+        f"Non-media files skipped: {stats.non_media_skipped}",
         f"Elapsed time: {stats.elapsed_seconds:.2f} seconds",
         f"Entities per second: {stats.entities_per_second:.2f}",
         f"Images per second: {stats.images_per_second:.2f}",
@@ -326,24 +334,31 @@ def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
     videos_sorted = 0
     frames_processed = 0
     family_photos_sorted = 0
+    files_skipped = 0
+    non_media_skipped = 0
     destination_folders: set[str] = set()
     started_at = time.perf_counter()
     with ExifToolKeywordWriter() as keyword_writer:
         for file in progress(files, verbose=verbose, description="Importing media", unit="file"):
             file_path = os.path.join(config.src, file)
             ext = os.path.splitext(file)[1].lower()
-            creation_year = datetime.datetime.fromtimestamp(os.path.getmtime(file_path)).year
+            is_image = ext in IMAGE_EXTENSIONS
+            is_video = ext in VIDEO_EXTENSIONS
+            if not is_image and not is_video:
+                logger.info("Skipping non-media file: %s", file)
+                non_media_skipped += 1
+                continue
             is_family = False
 
             try:
-                if ext in IMAGE_EXTENSIONS:
+                if is_image:
                     result = pipeline.process_image(
                         file_path,
                         keyword_writer=keyword_writer,
                     )
                     frames_processed += 1
                     is_family = result.get("is_family_photo", False)
-                elif ext in VIDEO_EXTENSIONS:
+                else:
                     result = _tag_video(
                         pipeline,
                         file_path,
@@ -359,34 +374,42 @@ def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
             if is_family:
                 dest_folder = family_dest
             else:
+                creation_year = file_date(file_path, keyword_writer.read_capture_date).year
                 dest_folder = os.path.join(config.dest, f"Photos from {creation_year}")
             os.makedirs(dest_folder, exist_ok=True)
-            moved = move_file(file_path, os.path.join(dest_folder, file))
-            if moved and ext in IMAGE_EXTENSIONS:
+            try:
+                moved = move_file(file_path, os.path.join(dest_folder, file))
+            except OSError:
+                error_count += 1
+                logger.exception("Failed to move %s; leaving it in source", file)
+                continue
+            if not moved:
+                files_skipped += 1
+                continue
+            destination_folders.add(dest_folder)
+            if is_image:
                 images_sorted += 1
-                destination_folders.add(dest_folder)
-                if is_family:
-                    family_photos_sorted += 1
-            elif moved and ext in VIDEO_EXTENSIONS:
+            else:
                 videos_sorted += 1
-                destination_folders.add(dest_folder)
-                if is_family:
-                    family_photos_sorted += 1
-    event_files_grouped = 0
-    if event:
-        for destination_folder in sorted(destination_folders):
-            logger.info(
-                "Running event sorter for %s with threshold %d",
-                destination_folder,
-                config.event_threshold,
-            )
-            event_files_grouped += group_events(
-                destination_folder,
-                config.event_threshold,
-                move_file,
-            )
-    else:
-        logger.info("Event sorter skipped.")
+            if is_family:
+                family_photos_sorted += 1
+
+        event_files_grouped = 0
+        if event:
+            for destination_folder in sorted(destination_folders):
+                logger.info(
+                    "Running event sorter for %s with threshold %d",
+                    destination_folder,
+                    config.event_threshold,
+                )
+                event_files_grouped += group_events(
+                    destination_folder,
+                    config.event_threshold,
+                    move_file,
+                    exif_reader=keyword_writer.read_capture_date,
+                )
+        else:
+            logger.info("Event sorter skipped.")
 
     stats = ImportStats(
         images_sorted=images_sorted,
@@ -396,11 +419,18 @@ def run_import(config: RuntimeConfig, verbose: bool, event: bool = True) -> int:
         event_files_grouped=event_files_grouped,
         new_people_found=pipeline.new_people_found,
         family_photos_sorted=family_photos_sorted,
+        files_skipped=files_skipped,
+        non_media_skipped=non_media_skipped,
     )
     report_stats(stats, verbose)
 
-    if error_count:
-        logger.warning("%d file(s) failed AI processing but were still moved", error_count)
+    if error_count or files_skipped:
+        if error_count:
+            logger.warning("%d file(s) failed processing or moving", error_count)
+        if files_skipped:
+            logger.warning(
+                "%d file(s) skipped and left in the source folder", files_skipped
+            )
         return 1
     logger.info("Import completed successfully: %d media file(s)", stats.total_entities)
     return 0

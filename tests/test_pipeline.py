@@ -14,6 +14,7 @@ class PipelineLoggingTest(unittest.TestCase):
         self.pipeline._face_detector = Mock()
         self.pipeline._face_identifier = Mock()
         self.pipeline._family_identities = set()
+        self.pipeline._family_group = "Family"
         image = np.zeros((8, 8, 3), dtype=np.uint8)
         self.pipeline._load_image = Mock(return_value=image)
 
@@ -72,6 +73,26 @@ class PipelineLoggingTest(unittest.TestCase):
         self.assertTrue(result["is_family_photo"])
         labels = write_keywords.call_args.args[1]
         self.assertIn("Family", labels)
+
+    @patch("aisorter.pipeline.write_keywords")
+    def test_family_keyword_uses_configured_group_name(self, write_keywords) -> None:
+        self.pipeline._family_group = "Household"
+        self.pipeline._family_identities = {"Alice", "Bob"}
+        self.pipeline._category_session.run.return_value = [
+            np.array([[-10.0, 10.0, -10.0]], dtype=np.float32)
+        ]
+        self.pipeline._face_detector.detect.return_value = [
+            {"bbox": (0.0, 0.0, 4.0, 4.0), "confidence": 0.9},
+            {"bbox": (5.0, 0.0, 8.0, 4.0), "confidence": 0.9},
+        ]
+        self.pipeline._face_identifier.identify.side_effect = ["Alice", "Bob"]
+
+        result = self.pipeline.process_image("family.jpg")
+
+        self.assertTrue(result["is_family_photo"])
+        labels = write_keywords.call_args.args[1]
+        self.assertIn("Household", labels)
+        self.assertNotIn("Family", labels)
 
     @patch("aisorter.pipeline.write_keywords")
     def test_family_keyword_not_added_when_only_one_family_member(self, write_keywords) -> None:

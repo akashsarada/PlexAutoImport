@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 
 class DepthwiseSeparableConv(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1) -> None:
@@ -44,7 +45,7 @@ class CategorySorter(nn.Module):
         return self.classifier(self.pool(self.blocks(self.entry(x))))
 
 
-def param_count(model: nn.Module = None) -> int:
+def param_count(model: Optional[nn.Module] = None) -> int:
     if model is None:
         model = CategorySorter()
     total = sum(p.numel() for p in model.parameters())

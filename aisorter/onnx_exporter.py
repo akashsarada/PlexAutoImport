@@ -1,4 +1,7 @@
-"""Export a trained MobileNetV3Mini .pth checkpoint to ONNX for onnxruntime inference."""
+"""Export a trained .pth checkpoint to ONNX for onnxruntime inference.
+
+Supports all four architectures: CategorySorter, MobileNetV3Mini, MobileNetV3Small, and CustomCNN.
+"""
 
 import argparse
 import os

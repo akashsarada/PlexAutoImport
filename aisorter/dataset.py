@@ -14,7 +14,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from constants import IMAGE_EXTENSIONS, IMAGENET_MEAN, IMAGENET_STD, LABEL_KEYWORDS, TRAINING_IMAGE_SIZE
-size = (TRAINING_IMAGE_SIZE, TRAINING_IMAGE_SIZE)
+TRANSFORM_SIZE = (TRAINING_IMAGE_SIZE, TRAINING_IMAGE_SIZE)
 
 def _folder_to_label(folder_name: str) -> torch.Tensor:
     name = folder_name.lower()
@@ -59,7 +59,7 @@ class MultiLabelPhotoDataset(Dataset):
             for img_path, label in tqdm(temp_samples, desc="Caching to RAM"):
                 try:
                     with Image.open(img_path) as img:
-                        cached_img = img.convert("RGB").resize(size)
+                        cached_img = img.convert("RGB").resize(TRANSFORM_SIZE)
                         cached_img.load()
                         self.cached_images.append(cached_img)
                         self.samples.append((img_path, label))
@@ -77,7 +77,8 @@ class MultiLabelPhotoDataset(Dataset):
             label = self.samples[index][1]
         else:
             img_path, label = self.samples[index]
-            image = Image.open(img_path).convert("RGB")
+            with Image.open(img_path) as img:
+                image = img.convert("RGB")
 
         if self.transform is not None:
             image = self.transform(image)
@@ -89,7 +90,7 @@ def build_transforms(train: bool) -> transforms.Compose:
     normalize = transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
     if train:
         return transforms.Compose([
-            transforms.Resize(size),
+            transforms.Resize(TRANSFORM_SIZE),
             transforms.RandomHorizontalFlip(),
             transforms.RandomRotation(15),
             transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
@@ -97,7 +98,7 @@ def build_transforms(train: bool) -> transforms.Compose:
             normalize,
         ])
     return transforms.Compose([
-        transforms.Resize(size),
+        transforms.Resize(TRANSFORM_SIZE),
         transforms.ToTensor(),
         normalize,
     ])
