@@ -1,14 +1,20 @@
-#.files
 .idea
+.DS_Store
 __pycache__
-.zip
+*.zip
+*.log
 .antigravitycli
+.agents
+.kiro
+error.txt
 
-# custom importers
-AkashImporter.bat
+# personal importer wrappers (copies of run.bat with filled-in paths)
+*Importer.bat
 
-# training data
+# training data and outputs
 test
 dataset
 labeled
 results
+out
+references
